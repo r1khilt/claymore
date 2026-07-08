@@ -35,6 +35,7 @@ from claymore.ports import MemoryStore
 
 if TYPE_CHECKING:
     from graphiti_core import Graphiti
+    from graphiti_core.embedder.client import EmbedderClient
 
 logger = structlog.get_logger(__name__)
 
@@ -236,6 +237,55 @@ class InMemoryMemoryStore(MemoryStore):
         self._facts.setdefault(lab_id, {})
 
 
+# Retry budget for embedder rate limits. Voyage's free tier is 3 RPM without a payment method;
+# real embedders throttle regardless, so the adapter must back off rather than fail a whole
+# ingest on a transient 429 (R6, ENGINEERING_GUIDELINES §3: transient vs permanent errors).
+_EMBED_MAX_ATTEMPTS = 6
+_EMBED_MAX_WAIT_S = 60.0
+
+
+def _make_resilient_embedder(api_key: str) -> EmbedderClient:
+    """Build a Voyage embedder that retries on rate-limit errors with exponential backoff.
+
+    Lazily imports graphiti + voyage (kept out of module scope so the in-memory store and CI
+    work without the ``memory`` extra) and subclasses ``VoyageAIEmbedder`` so it *is* a valid
+    Graphiti ``EmbedderClient`` while transparently retrying 429s.
+    """
+    from collections.abc import Iterable
+
+    from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+    from voyageai import error as voyage_error
+
+    _retry = retry(
+        retry=retry_if_exception_type(voyage_error.RateLimitError),
+        wait=wait_exponential(multiplier=2, max=_EMBED_MAX_WAIT_S),
+        stop=stop_after_attempt(_EMBED_MAX_ATTEMPTS),
+        reraise=True,
+    )
+
+    class _ResilientVoyageEmbedder(VoyageAIEmbedder):
+        @_retry
+        async def create(
+            self,
+            input_data: str | list[str] | Iterable[int] | Iterable[Iterable[int]],
+        ) -> list[float]:
+            result: list[float] = await super().create(input_data)
+            return result
+
+        @_retry
+        async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
+            result: list[list[float]] = await super().create_batch(input_data_list)
+            return result
+
+    return _ResilientVoyageEmbedder(VoyageAIEmbedderConfig(api_key=api_key))
+
+
 class GraphitiMemoryStore(MemoryStore):
     """Graphiti-on-FalkorDB adapter. One FalkorDB database per lab (R10).
 
@@ -261,7 +311,6 @@ class GraphitiMemoryStore(MemoryStore):
 
         from graphiti_core import Graphiti
         from graphiti_core.driver.falkordb_driver import FalkorDriver
-        from graphiti_core.embedder.voyage import VoyageAIEmbedder, VoyageAIEmbedderConfig
         from graphiti_core.llm_client.anthropic_client import AnthropicClient
         from graphiti_core.llm_client.config import LLMConfig
 
@@ -281,9 +330,7 @@ class GraphitiMemoryStore(MemoryStore):
                     small_model=self._settings.extraction_model,
                 )
             ),
-            embedder=VoyageAIEmbedder(
-                VoyageAIEmbedderConfig(api_key=self._settings.voyage_api_key.get_secret_value())
-            ),
+            embedder=_make_resilient_embedder(self._settings.voyage_api_key.get_secret_value()),
             max_coroutines=self._settings.graphiti_semaphore_limit,
         )
         self._clients[lab_id] = client

@@ -1,0 +1,76 @@
+[project]
+name = "claymore"
+version = "0.0.1"
+description = "A Shepherd-equivalent lab-memory agent + a bio layer: ingest -> ask (attributed) -> act -> MCP-out -> proactive -> run the experiment."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+
+# Core runtime only. Vendor SDKs that sit behind an adapter (ports.py) live in the
+# optional groups below, so the domain core stays importable without every SDK
+# installed and so a vendor swap = one new adapter, not a dependency rewrite (R9).
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "structlog>=24.4",           # structured JSON logging + correlation IDs (ENGINEERING_GUIDELINES §3)
+    "tenacity>=9.0",             # retry-with-backoff for transient upstream failures
+]
+
+[project.optional-dependencies]
+# --- adapters (installed per the layer you're building) ---
+memory = ["graphiti-core>=0.3", "voyageai>=0.3"]          # MemoryStore + Embedder (Brain)
+llm = ["anthropic>=0.40"]                                  # LLM adapter (model routing inside)
+ingest = ["composio>=0.5", "composio-anthropic>=0.5"]      # ConnectorHub (Pipes)
+state = ["asyncpg>=0.30", "sqlalchemy[asyncio]>=2.0", "alembic>=1.14", "redis>=5.2", "arq>=0.26"]
+messaging = ["python-telegram-bot>=21.6", "twilio>=9.3"]   # MessagingChannel (Pipes)
+mcp = ["fastmcp>=2.0"]                                      # MCP-out server (Brain, Phase 2.5)
+# execute/ (compute + wet-lab) deps are added in Phase 3/4, intentionally not here yet.
+
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "types-redis",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claymore"]
+
+# --- lint / format (ENGINEERING_GUIDELINES §1) ---
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "evals"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
+ignore = ["S101"]  # allow assert in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+
+# --- types: mypy --strict is the CI gate (ENGINEERING_GUIDELINES §1) ---
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+explicit_package_bases = true
+# vendor SDKs without stubs — don't fail the strict gate on them
+[[tool.mypy.overrides]]
+module = ["graphiti_core.*", "voyageai.*", "composio.*", "composio_anthropic.*", "fastmcp.*", "arq.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

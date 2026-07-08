@@ -1,0 +1,54 @@
+# Local dev stack for Claymore (BUILD_PLAN.md §4.8 / CLAUDE.md §4).
+# `docker compose up` -> FalkorDB (graph memory), Postgres (state/audit), Redis (queue/cache).
+# One command to a seeded local stack (ENGINEERING_GUIDELINES.md §4 DX).
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: claymore-falkordb
+    ports:
+      - "6379:6379"     # Redis-protocol; Graphiti talks to this
+      - "3000:3000"     # FalkorDB browser UI
+    volumes:
+      - falkordb_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: claymore-postgres
+    environment:
+      POSTGRES_USER: claymore
+      POSTGRES_PASSWORD: claymore
+      POSTGRES_DB: claymore
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claymore"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: claymore-redis
+    # Separate Redis for the Arq job queue + caches, kept off FalkorDB's port
+    # so graph load and queue load don't contend.
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  falkordb_data:
+  postgres_data:
+  redis_data:

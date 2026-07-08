@@ -8,14 +8,19 @@ science-memory agent most easily produces a confident wrong answer.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import pytest
 from evals.corpus import CASES, CORPUS, ROSTER, EvalCase
 from evals.harness import format_report, run_eval
 
+from claymore.domain import LabId, SourcePlatform, Visibility
+from claymore.ingest.normalize import Episode
 from claymore.memory.graph import InMemoryMemoryStore
+from claymore.memory.ontology import EdgeType, Fact, Provenance
 from claymore.memory.retrieval import retrieve
+from claymore.ports import MemoryStore
 from tests.fixtures import make_episode, make_user
 
 EARLY = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
@@ -109,6 +114,78 @@ async def test_metrics_exact_on_crafted_corpus() -> None:
     single = report.by_case_type["single_hop"]
     assert single.n == 2
     assert single.confident_wrong_rate == 0.5
+
+
+# --- (b2) the killer bug: a real source pinned to the WRONG author must be caught ---------------
+
+
+class _MispairingStore(MemoryStore):
+    """A store that always returns a fixed set of facts, regardless of query — used to inject a
+    provenance the InMemoryMemoryStore can never produce (its author is a pure function of the
+    source, so it can't mis-pair). The real GraphitiMemoryStore CAN diverge source from author,
+    which is exactly the failure this stand-in simulates."""
+
+    def __init__(self, facts: Sequence[Fact]) -> None:
+        self._facts = list(facts)
+
+    async def add_episode(self, episode: Episode) -> None:
+        return None
+
+    async def search(
+        self, lab_id: LabId, query: str, *, group_ids: Sequence[str], limit: int = 10
+    ) -> list[Fact]:
+        return list(self._facts)
+
+    async def build_indices(self, lab_id: LabId) -> None:
+        return None
+
+
+async def test_confident_wrong_catches_source_paired_with_wrong_author() -> None:
+    """Source "a" is really Lucas's and source "b" is really Philip's. A retrieved fact pins the
+    real source "a" to Philip — an author who legitimately authored a *different* source in the
+    same (multi-author) case. Independent membership checks (source in expected, author in expected)
+    both pass and would miss this; the paired check against corpus truth must flag it.
+
+    This asserts confident_wrong_rate > 0 and precision < 1.0 — it FAILS against the old
+    independent-membership logic (which scored this clean) and PASSES against the paired logic.
+    """
+    # Corpus defines the ground truth: a -> p_lucas, b -> p_philip.
+    ep_a = make_episode(source_id="a", source_hash="ha", author="p_lucas", text="alpha", refs=())
+    ep_b = make_episode(source_id="b", source_hash="hb", author="p_philip", text="beta", refs=())
+
+    # The fabricated retrieval: real source "a" attributed to Philip (who really authored "b").
+    mispaired = Fact(
+        subject_id="p_philip",
+        edge=EdgeType.SUGGESTED,
+        object_id="alpha-topic",
+        valid_from=EARLY,
+        provenance=Provenance(
+            source_platform=SourcePlatform.SLACK,
+            source_id="a",
+            timestamp=EARLY,
+            author="p_philip",  # WRONG: source "a" was really authored by p_lucas
+        ),
+        visibility=Visibility(lab_wide=True, source_label="#lab"),
+    )
+
+    case = EvalCase(
+        query="alpha",
+        expected_source_ids=frozenset({"a", "b"}),
+        expected_authors=frozenset({"p_lucas", "p_philip"}),  # multi-author: both are valid authors
+        case_type="multi_hop",
+    )
+    roster = [make_user("u_maya", person_id="p_maya")]
+
+    report = await run_eval(_MispairingStore([mispaired]), [case], roster, corpus=[ep_a, ep_b])
+
+    # The one returned fact is a fabricated attribution -> caught.
+    assert report.confident_wrong_rate > 0
+    assert report.attribution_precision < 1.0
+    r = report.results[0]
+    assert r.retrieved == 1
+    assert r.correct == 0
+    assert r.confident_wrong is True
+    assert r.found_sources == 0  # nothing was surfaced with the correct author
 
 
 # --- (c) visibility: a non-participant retrieves nothing and is never wrongly attributed --------

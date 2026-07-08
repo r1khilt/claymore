@@ -15,11 +15,12 @@ a readable report.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
 from claymore.auth.models import User
+from claymore.domain import PersonId
 from claymore.ingest.normalize import Episode
 from claymore.memory.graph import InMemoryMemoryStore
 from claymore.memory.retrieval import retrieve
@@ -44,15 +45,18 @@ class CaseResult(BaseModel):
     retrieved: int
     """Facts returned by ``retrieve`` for this case."""
     correct: int
-    """Returned facts whose ``source_id`` is in the expected set."""
+    """Returned facts that are *correctly attributed*: ``source_id`` is expected AND the
+    ``(source_id, author)`` pair matches who really authored that source in the corpus."""
     expected_sources: int
     """Size of the expected source set (0 for a negative/visibility case)."""
     found_sources: int
-    """Distinct expected sources actually retrieved (recall numerator)."""
+    """Distinct expected sources surfaced *with the correct author* (recall numerator)."""
 
     confident_wrong: bool
-    """True if ANY returned fact was attributed to a source or author outside the expected set —
-    a wrong attribution presented as an answer. Zero of these is the whole game."""
+    """True if ANY returned fact is not correctly attributed — its ``source_id`` is outside the
+    expected set, OR its ``(source_id, author)`` pair contradicts who really authored that source
+    (attributing a real source to the wrong person is a wrong attribution, even when that person
+    legitimately authored some *other* source in the case). Zero of these is the whole game."""
     covered: bool
     """True if the case was adequately grounded: ≥1 correct source, or (for a negative case with no
     expected sources) nothing was retrieved."""
@@ -83,7 +87,8 @@ class EvalReport(BaseModel):
     coverage: float
     """Fraction of cases adequately grounded (see :attr:`CaseResult.covered`)."""
     confident_wrong_rate: float
-    """THE metric: fraction of cases where a fact was returned under a wrong source/author."""
+    """THE metric: fraction of cases where a fact was returned under a wrong source, or a real
+    source pinned to the wrong author (a mis-paired ``(source_id, author)``)."""
 
     by_case_type: dict[str, CaseTypeMetrics]
     results: tuple[CaseResult, ...]
@@ -118,15 +123,35 @@ def _metrics(results: Sequence[CaseResult]) -> CaseTypeMetrics:
     )
 
 
-def _score_case(case: EvalCase, facts: Sequence[_ScoredFact]) -> CaseResult:
-    """Compare one case's retrieved facts against its expected provenance."""
-    retrieved_sources = {f.source_id for f in facts}
-    correct = sum(1 for f in facts if f.source_id in case.expected_source_ids)
-    found_sources = len(retrieved_sources & case.expected_source_ids)
-    confident_wrong = any(
-        f.source_id not in case.expected_source_ids or f.author not in case.expected_authors
-        for f in facts
-    )
+def _source_author_truth(corpus: Sequence[Episode]) -> dict[str, PersonId]:
+    """Authoritative ``source_id -> author`` map straight from the corpus episodes: who *really*
+    authored each source. This is the ground truth a retrieved fact's ``(source_id, author)`` pair
+    is checked against — a fact that pairs a source with any other author is a fabricated
+    attribution (hard rule 1), even when that author legitimately authored a *different* source.
+
+    Membership-only checks (``source_id`` in one set, ``author`` in another, independently) miss
+    exactly this: they let a real source paired with the wrong-but-elsewhere-valid author pass.
+    """
+    return {ep.source_id: ep.author for ep in corpus}
+
+
+def _score_case(
+    case: EvalCase, facts: Sequence[_ScoredFact], truth: Mapping[str, PersonId]
+) -> CaseResult:
+    """Compare one case's retrieved facts against its expected provenance.
+
+    A fact is *correctly attributed* only when its ``source_id`` is expected for the case AND its
+    ``(source_id, author)`` pair agrees with ``truth`` (the corpus's real author for that source).
+    Any other returned fact — unexpected source, or a real source pinned to the wrong author — is a
+    confident wrong attribution.
+    """
+
+    def correctly_attributed(f: _ScoredFact) -> bool:
+        return f.source_id in case.expected_source_ids and truth.get(f.source_id) == f.author
+
+    correct = sum(1 for f in facts if correctly_attributed(f))
+    found_sources = len({f.source_id for f in facts if correctly_attributed(f)})
+    confident_wrong = any(not correctly_attributed(f) for f in facts)
     expected_sources = len(case.expected_source_ids)
     covered = found_sources > 0 if expected_sources > 0 else len(facts) == 0
     return CaseResult(
@@ -180,6 +205,7 @@ async def run_eval(
 
     by_id = {u.id: u for u in roster}
     default = roster[0]
+    truth = _source_author_truth(corpus)
 
     results: list[CaseResult] = []
     for case in cases:
@@ -188,7 +214,7 @@ async def run_eval(
         scored = [
             _ScoredFact(source_id=f.provenance.source_id, author=f.provenance.author) for f in facts
         ]
-        results.append(_score_case(case, scored))
+        results.append(_score_case(case, scored, truth))
 
     overall = _metrics(results)
     by_type = {

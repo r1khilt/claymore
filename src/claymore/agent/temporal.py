@@ -26,6 +26,15 @@ phrases ("today", "this week", "in June") snap to day/week/month boundaries; rol
 ("last 5 days", "a couple months ago", "recently") are measured back from ``now`` and end at
 ``now``. Weeks start Monday. If two *different* time expressions appear in one query it is
 treated as ambiguous and resolves to "all time" rather than guessing which the asker meant.
+
+Directional qualifiers on an otherwise-resolvable anchor are honored, not ignored (getting this
+wrong is the worst failure class here — a confidently *inverted* window, CLAUDE.md §2 rule 1):
+``since``/``after <phrase>`` reopens the window to end at ``now`` (``[anchor.start, now]``);
+``before``/``until <phrase>`` makes it unbounded-before the anchor (``[None, anchor.start]``).
+Negation/exclusion qualifiers (``not``, ``except``, ``other than``, ``excluding``) describe a
+*complement*, which a single contiguous window cannot express — so they degrade to "all time"
+with a label that flags it was not pinned, rather than ever returning the excluded window itself.
+Anything not confidently handled falls back to "all time"; the module never guesses a window.
 """
 
 from __future__ import annotations
@@ -41,6 +50,12 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 ALL_TIME_LABEL = "all time"
 """Label for the unbounded window returned when nothing (or something ambiguous) is matched."""
+
+ALL_TIME_EXCLUSION_LABEL = "all time (unparsed exclusion)"
+"""Label for the unbounded window returned when a negation/exclusion qualifier ("not last week",
+"everything except this week") is detected. A single contiguous window cannot express the
+complement the asker meant, so we return "all time" and flag that it was *not* pinned — never the
+excluded window itself, which would be a confidently wrong answer (CLAUDE.md §2 rule 1)."""
 
 RECENT_DAYS = 14
 """How far back "recently" reaches, in days."""
@@ -146,7 +161,8 @@ def resolve_window(text: str, *, now: datetime) -> TimeWindow:
             region_end = max(region_end, end)
         if chosen is None:
             return _all_time()
-        return chosen[0](now, chosen[1])
+        handler, match = chosen
+        return _apply_qualifier(normalized, match, handler(now, match), now)
     except (ValueError, OverflowError, KeyError):
         # Defensive: any arithmetic/lookup surprise on hostile input degrades to "all time"
         # rather than propagating. A crash on a user's question is never acceptable.
@@ -162,6 +178,40 @@ def _all_time() -> TimeWindow:
 
 def _win(start: datetime, end: datetime, label: str) -> TimeWindow:
     return TimeWindow(start=start, end=end, label=label)
+
+
+# --- qualifier handling (directional / negation on a resolved anchor) --------------------------
+# These act on the text *immediately before* the matched phrase. Directional qualifiers must be
+# adjacent (grammar: "since yesterday", "before last week"); an exclusion word anywhere before the
+# phrase forces "all time" because it names a complement no single window can hold.
+
+_NEGATION_RE = re.compile(r"\b(?:not|except|excluding|other\s+than)\b")
+_SINCE_RE = re.compile(r"\b(?:since|after)\s*$")
+_BEFORE_RE = re.compile(r"\b(?:before|until)\s*$")
+
+
+def _apply_qualifier(
+    normalized: str, match: re.Match[str], anchor: TimeWindow, now: datetime
+) -> TimeWindow:
+    """Adjust ``anchor`` for a directional/negation qualifier preceding the matched phrase.
+
+    Correctness-first: a qualifier we cannot faithfully represent (a negation/exclusion, or a
+    directional word with no resolvable anchor start) degrades to "all time" rather than returning
+    an inverted or shifted window. With no recognized qualifier, ``anchor`` is returned unchanged.
+    """
+    prefix = normalized[: match.start()]
+    if _NEGATION_RE.search(prefix):
+        return TimeWindow(start=None, end=None, label=ALL_TIME_EXCLUSION_LABEL)
+    if anchor.start is None:
+        # Nothing to anchor a directional window to (e.g. "since last 0 days"): stay unbounded.
+        return anchor
+    if (since := _SINCE_RE.search(prefix)) is not None:
+        label = f"{since.group().strip()} {anchor.label}"
+        return TimeWindow(start=anchor.start, end=now, label=label)
+    if (before := _BEFORE_RE.search(prefix)) is not None:
+        label = f"{before.group().strip()} {anchor.label}"
+        return TimeWindow(start=None, end=anchor.start, label=label)
+    return anchor
 
 
 def _ensure_utc(dt: datetime) -> datetime:
@@ -248,6 +298,20 @@ def _h_yesterday(now: datetime, _m: re.Match[str]) -> TimeWindow:
     return _win(start, start + timedelta(days=1), "yesterday")
 
 
+def _h_before_yesterday(now: datetime, m: re.Match[str]) -> TimeWindow:
+    """A single day "N days before yesterday" ("the day before yesterday" is the ``N=1`` case).
+
+    "before yesterday" here shifts by whole days: N days before yesterday is ``now - (N+1) days``.
+    Matched *before* the generic "before <phrase>" qualifier so it stays a day, not an
+    unbounded-before window."""
+    token = m.group(1)
+    n = 1 if token is None else _parse_number(token)
+    if n is None or n <= 0:
+        return _all_time()
+    start = _start_of_day(now) - timedelta(days=n + 1)
+    return _win(start, start + timedelta(days=1), m.group(0).strip())
+
+
 def _h_this_week(now: datetime, _m: re.Match[str]) -> TimeWindow:
     start = _start_of_week(now)
     return _win(start, start + timedelta(weeks=1), "this week")
@@ -306,6 +370,10 @@ _MONTH_ALT = "|".join(_MONTH_INDEX)
 
 _RULES: list[tuple[re.Pattern[str], Callable[[datetime, re.Match[str]], TimeWindow]]] = [
     (re.compile(r"\btoday\b"), _h_today),
+    (
+        re.compile(rf"\b(?:the\s+day|(\d+|{_NUM_ALT})\s+days?)\s+before\s+yesterday\b"),
+        _h_before_yesterday,
+    ),
     (re.compile(r"\byesterday\b"), _h_yesterday),
     (re.compile(r"\bthis\s+week\b"), _h_this_week),
     (re.compile(r"\blast\s+week\b"), _h_last_week),

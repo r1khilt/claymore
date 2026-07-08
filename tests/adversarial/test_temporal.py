@@ -13,7 +13,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from claymore.agent.temporal import ALL_TIME_LABEL, TimeWindow, resolve_window
+from claymore.agent.temporal import (
+    ALL_TIME_EXCLUSION_LABEL,
+    ALL_TIME_LABEL,
+    TimeWindow,
+    resolve_window,
+)
 
 NOW = datetime(2026, 3, 3, 12, 0, tzinfo=UTC)
 
@@ -26,6 +31,14 @@ def assert_all_time(r: TimeWindow) -> None:
     assert r.start is None
     assert r.end is None
     assert r.label == ALL_TIME_LABEL
+
+
+def assert_unbounded_exclusion(r: TimeWindow) -> None:
+    # Degraded to "all time" because the phrase named a complement — flagged, never the
+    # excluded window itself. Bounds are None; the label signals the window was not pinned.
+    assert r.start is None
+    assert r.end is None
+    assert r.label == ALL_TIME_EXCLUSION_LABEL
 
 
 # --- empty / whitespace / garbage ---
@@ -53,15 +66,20 @@ def test_pure_garbage() -> None:
         "{{now}}",
         "${now}",
         "__import__('os').system('rm -rf /')",
-        "last week'); DROP GRAPH; --",  # a real phrase glued to an injection
     ],
 )
-def test_injection_shaped_input_never_executes_and_never_crashes(payload: str) -> None:
-    r = w(payload)
-    # Either it degrades to all-time, or it extracts the inert phrase — never evaluates anything.
-    assert isinstance(r, TimeWindow)
-    if r.label != ALL_TIME_LABEL:
-        assert r.label == "last week"  # only the "last week" case carries a real phrase
+def test_injection_shaped_input_resolves_to_all_time(payload: str) -> None:
+    # No time phrase present: the string is inert data, resolves to unbounded "all time" — it is
+    # never templated, evaluated, or executed. Asserting the exact all-time window (not merely
+    # isinstance) is what makes "inert" a real assertion.
+    assert_all_time(w(payload))
+
+
+def test_injection_glued_to_real_phrase_extracts_only_the_inert_phrase() -> None:
+    # "last week" is extracted as inert data; the SQL/graph injection tail is ignored, not run.
+    r = w("last week'); DROP GRAPH; --")
+    assert (r.start, r.end) == (datetime(2026, 2, 23, tzinfo=UTC), datetime(2026, 3, 2, tzinfo=UTC))
+    assert r.label == "last week"
 
 
 # --- unicode ---
@@ -104,6 +122,63 @@ def test_phrase_at_front_of_huge_input_still_resolves() -> None:
 )
 def test_contradictory_phrases_resolve_to_all_time(text: str) -> None:
     assert_all_time(w(text))
+
+
+# --- negation / exclusion -> unbounded "all time" (never the excluded window itself) ---
+# A single contiguous window cannot express a complement. The killer bug is returning the
+# EXCLUDED window (or its complement-of-a-complement) and presenting it as the answer.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not last week",
+        "everything except this week",
+        "except last month",
+        "other than yesterday",
+        "excluding last year",
+        "not since yesterday",  # negation dominates the directional qualifier
+    ],
+)
+def test_negation_and_exclusion_degrade_to_unbounded_not_the_excluded_window(text: str) -> None:
+    r = w(text)
+    # The one thing that must never happen: returning the very window the asker excluded.
+    assert (r.start, r.end) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not last week",
+        "everything except this week",
+        "except last month",
+        "other than yesterday",
+        "excluding last year",
+        "not since yesterday",
+    ],
+)
+def test_recognized_exclusion_is_flagged_as_unpinned(text: str) -> None:
+    assert_unbounded_exclusion(w(text))
+
+
+# --- qualifier garbage: directional words with no resolvable anchor -> all time ---
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "since",
+        "before",
+        "until then",
+        "after that",
+        "since gibberish",
+        "before the docking pipeline",
+        "since last 0 days",  # anchor itself degenerates -> stays unbounded, never crashes
+    ],
+)
+def test_directional_qualifier_without_resolvable_anchor_is_all_time(text: str) -> None:
+    r = w(text)
+    assert (r.start, r.end) == (None, None)
 
 
 # --- degenerate counts ---

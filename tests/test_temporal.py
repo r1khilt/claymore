@@ -143,6 +143,66 @@ def test_in_december_wraps_end_into_next_january() -> None:
     assert (r.start, r.end) == (d(2025, 12, 1), d(2026, 1, 1))
 
 
+# --- directional qualifiers on a resolvable anchor (must NOT invert/shift the window) ---
+
+
+def test_since_phrase_ends_at_now_not_at_the_anchor_end() -> None:
+    # "since yesterday" = from the start of yesterday up to now, NOT just yesterday's window.
+    r = w("since yesterday")
+    assert (r.start, r.end) == (d(2026, 3, 2), NOW)
+    assert r.label == "since yesterday"
+
+
+def test_after_phrase_is_from_anchor_start_up_to_now() -> None:
+    r = w("after last week")
+    assert (r.start, r.end) == (d(2026, 2, 23), NOW)
+    assert r.label == "after last week"
+
+
+def test_since_last_week_reopens_to_now() -> None:
+    r = w("what happened since last week")
+    assert (r.start, r.end) == (d(2026, 2, 23), NOW)
+
+
+def test_before_phrase_is_unbounded_before_the_anchor_start() -> None:
+    # "before last week" = everything up to the start of last week, unbounded before.
+    r = w("before last week")
+    assert r.start is None
+    assert r.end == d(2026, 2, 23)
+    assert r.label == "before last week"
+
+
+def test_until_phrase_is_unbounded_before_the_anchor_start() -> None:
+    r = w("until last month")
+    assert r.start is None
+    assert r.end == d(2026, 2, 1)
+    assert r.label == "until last month"
+
+
+def test_before_yesterday_is_unbounded_before_yesterdays_start() -> None:
+    r = w("before yesterday")
+    assert r.start is None
+    assert r.end == d(2026, 3, 2)
+
+
+def test_the_day_before_yesterday_is_a_single_day() -> None:
+    # now - 2 days, a single day window (NOT yesterday, NOT unbounded-before).
+    r = w("the day before yesterday")
+    assert (r.start, r.end) == (d(2026, 3, 1), d(2026, 3, 2))
+    assert r.label == "the day before yesterday"
+
+
+def test_two_days_before_yesterday_shifts_by_the_full_offset() -> None:
+    # "N days before yesterday" = now - (N+1) days, a single day.
+    r = w("two days before yesterday")
+    assert (r.start, r.end) == (d(2026, 2, 28), d(2026, 3, 1))
+
+
+def test_three_days_before_yesterday_digit_form() -> None:
+    r = w("3 days before yesterday")
+    assert (r.start, r.end) == (d(2026, 2, 27), d(2026, 2, 28))
+
+
 # --- general behaviour ---
 
 

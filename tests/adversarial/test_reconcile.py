@@ -208,3 +208,45 @@ def test_different_subjects_same_time_no_contradiction() -> None:
         make_fact(subject="p_bob", object_id="B", valid_from=BASE, source_id="b1"),
     ]
     assert reconcile(facts) == []
+
+
+# --- R10: disjoint visibility scopes never cross-react (cross-lab subject_id collision trap) ---
+
+
+def test_disjoint_scopes_same_subject_no_supersedes() -> None:
+    # Two facts colliding on subject_id but from non-overlapping need-to-know scopes (the shape
+    # of a cross-lab collision: Fact has no lab_id, so a caller could pass two labs' facts). They
+    # would order into a SUPERSEDES by time, but no one can see BOTH facts, so no edge is emitted.
+    scope_x = Visibility(lab_wide=False, allowed_user_ids=frozenset({"u_x"}))
+    scope_y = Visibility(lab_wide=False, allowed_user_ids=frozenset({"u_y"}))
+    earlier = make_fact(object_id="A", valid_from=BASE, source_id="e1", visibility=scope_x)
+    later = make_fact(
+        object_id="B", valid_from=BASE + timedelta(days=1), source_id="e2", visibility=scope_y
+    )
+    assert reconcile([earlier, later]) == []
+
+
+def test_disjoint_scopes_concurrent_no_contradiction() -> None:
+    # Same trap on the CONTRADICTS path: concurrent, conflicting objects but disjoint scopes.
+    scope_x = Visibility(lab_wide=False, allowed_user_ids=frozenset({"u_x"}))
+    scope_y = Visibility(lab_wide=False, allowed_user_ids=frozenset({"u_y"}))
+    a = make_fact(object_id="A", valid_from=BASE, source_id="e1", visibility=scope_x)
+    b = make_fact(object_id="B", valid_from=BASE, source_id="e2", visibility=scope_y)
+    assert reconcile([a, b]) == []
+
+
+def test_overlapping_scopes_still_reconcile() -> None:
+    # Positive control: scopes that DO share a viewer are a legitimate same-lab reconciliation and
+    # must still produce an edge (scoped to the shared viewer). Proves the R10 guard is a scope
+    # filter, not a blanket "different visibility → no edge".
+    scope_xy = Visibility(lab_wide=False, allowed_user_ids=frozenset({"u_x", "u_y"}))
+    scope_x = Visibility(lab_wide=False, allowed_user_ids=frozenset({"u_x"}))
+    earlier = make_fact(object_id="A", valid_from=BASE, source_id="e1", visibility=scope_xy)
+    later = make_fact(
+        object_id="B", valid_from=BASE + timedelta(days=1), source_id="e2", visibility=scope_x
+    )
+    edges = reconcile([earlier, later])
+    assert len(edges) == 1
+    assert edges[0].edge is EdgeType.SUPERSEDES
+    assert edges[0].visibility.lab_wide is False
+    assert edges[0].visibility.allowed_user_ids == frozenset({"u_x"})

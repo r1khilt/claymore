@@ -10,7 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,6 +54,20 @@ class Settings(BaseSettings):
     query_model: str = "claude-opus-4-8"
     graphiti_semaphore_limit: int = Field(default=10, ge=1, le=100)
     per_lab_monthly_spend_cap_usd: float | None = None
+
+    @field_validator("per_lab_monthly_spend_cap_usd", mode="before")
+    @classmethod
+    def _blank_is_none(cls, v: object) -> object:
+        """Treat a blank/whitespace env var as unset (None).
+
+        A commented-out or empty ``PER_LAB_MONTHLY_SPEND_CAP_USD=`` line in ``.env`` is the
+        natural way to say "no cap", but pydantic would otherwise try to parse ``""`` as a float
+        and fail app startup. Empty → None keeps a blank line meaning "unset" for every optional
+        numeric knob.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     # --- feature flags (default OFF until a layer is built + eval'd; R1) ---
     ingest_enabled: bool = False

@@ -74,3 +74,6 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: live tests needing real services/keys (FalkorDB, Anthropic, Voyage); skipped unless CLAYMORE_RUN_LIVE=1",
+]

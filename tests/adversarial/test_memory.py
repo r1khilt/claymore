@@ -60,6 +60,20 @@ async def test_empty_query_returns_nothing() -> None:
     assert await retrieve(store, make_user(), "") == []
 
 
+async def test_stopword_only_query_does_not_match() -> None:
+    # A query whose only overlap with stored text is a stopword must NOT retrieve — otherwise
+    # the grounding refusal (hard rule 1) is silently defeated. The seeded text contains "of".
+    store = InMemoryMemoryStore()
+    await store.add_episode(
+        make_episode(text="Lucas suggested testing thermostability of the X protein.")
+    )
+    # "of" appears in the text but is a stopword; none of the content terms match.
+    assert await store.search(LAB, "boiling point of xenon", group_ids=[LAB]) == []
+    assert await store.search(LAB, "the of a to", group_ids=[LAB]) == []
+    # A genuine content term still matches.
+    assert await store.search(LAB, "thermostability", group_ids=[LAB])
+
+
 async def test_huge_query_is_truncated_not_rejected() -> None:
     store = InMemoryMemoryStore()
     await store.add_episode(make_episode())

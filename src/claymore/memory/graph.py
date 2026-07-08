@@ -57,6 +57,35 @@ def episode_key(episode: Episode) -> str:
     return f"{episode.source_platform}:{episode.source_id}:{episode.source_hash or ''}"
 
 
+# English function words dropped from a query before matching. Without this the naive
+# substring match treats a stopword ("of", "the") as a content term, so an ungrounded query
+# like "boiling point of xenon" spuriously matches any text containing "of" — silently
+# defeating the grounding refusal (hard rule 1) and inflating retrieval in the eval harness.
+# A real store (Graphiti BM25/vector) ignores stopwords; the fake must approximate that so
+# tests and the grounding gate are genuinely exercised.
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "with", "from", "into",
+        "over", "than", "then", "as", "is", "it", "its", "be", "are", "was", "were", "am",
+        "and", "or", "but", "not", "no", "do", "does", "did", "done", "this", "that", "these",
+        "those", "we", "you", "i", "they", "he", "she", "him", "her", "them", "us", "me",
+        "what", "which", "who", "whom", "when", "where", "why", "how", "about", "there",
+        "here", "up", "out", "off", "if", "so", "such", "can", "could", "would", "should",
+        "will", "shall", "may", "might", "have", "has", "had",
+    }
+)
+
+
+def meaningful_terms(query: str) -> list[str]:
+    """Content tokens of a query — lowercased, stopwords removed (see :data:`_STOPWORDS`).
+
+    Kept out of ``search`` so the exact tokenization is testable and shared. A query that is
+    all stopwords yields ``[]`` (→ no retrieval → honest "can't find it"), which is correct:
+    such a query carries no retrievable intent.
+    """
+    return [t for t in query.casefold().split() if t and t not in _STOPWORDS]
+
+
 class InMemoryMemoryStore(MemoryStore):
     """Deterministic, dependency-free ``MemoryStore`` (Phase 0 / tests / fixtures).
 
@@ -121,7 +150,7 @@ class InMemoryMemoryStore(MemoryStore):
         # rather than everything (fail closed, mirrors "never a global search").
         if lab_id not in group_ids:
             return []
-        terms = [t for t in query.casefold().split() if t]
+        terms = meaningful_terms(query)
         if not terms:
             return []
         hits: list[tuple[datetime, Fact]] = []

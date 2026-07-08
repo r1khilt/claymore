@@ -11,11 +11,15 @@ No source → don't assert it.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from claymore.actions.approvals import PendingAction
 from claymore.domain import LabId, PersonId, SourcePlatform, UserId
+
+if TYPE_CHECKING:  # avoid an import cycle: router imports the contracts defined in this module.
+    from claymore.agent.router import AgentRuntime
 
 
 class RequestContext(BaseModel):
@@ -51,10 +55,35 @@ class Reply(BaseModel):
     pending_action: PendingAction | None = None
 
 
-async def handle(ctx: RequestContext, text: str) -> Reply:
-    """Route an inbound message to an answer/action.
+# Module-level runtime holder. ``handle()``'s signature is frozen, so its dependencies (store,
+# llm, conversations) are injected via a runtime set here — either explicitly by the host at
+# startup (``set_runtime``) or lazily as an all-in-memory default (``default_runtime``).
+_runtime: AgentRuntime | None = None
 
-    STUB: returns an honest placeholder so Pipes can wire the messaging round-trip before the
-    Brain agent exists. Replace the body (not the signature) with the Claude tool-loop in Phase 2.
+
+def set_runtime(runtime: AgentRuntime) -> None:
+    """Install the runtime ``handle()`` should use (call once at startup with real adapters)."""
+    global _runtime
+    _runtime = runtime
+
+
+def get_runtime() -> AgentRuntime:
+    """Return the installed runtime, lazily building an in-memory default on first use."""
+    global _runtime
+    if _runtime is None:
+        from claymore.agent.router import default_runtime
+
+        _runtime = default_runtime()
+    return _runtime
+
+
+async def handle(ctx: RequestContext, text: str) -> Reply:
+    """Route an inbound message to an attributed answer (the "Ask" loop).
+
+    Delegates to ``router.answer`` using the installed :class:`~claymore.agent.router.AgentRuntime`.
+    Grounding is enforced there (hard rule 1): an ungrounded question yields an honest no-answer
+    with zero citations, and citations always come from retrieval provenance, never the model.
     """
-    return Reply(text="Claymore is scaffolded but the agent isn't wired yet — coming in Phase 2.")
+    from claymore.agent.router import answer
+
+    return await answer(get_runtime(), ctx, text)

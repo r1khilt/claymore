@@ -1,0 +1,27 @@
+# CI gate (ENGINEERING_GUIDELINES.md §4/§5): green = safe to merge.
+# ruff (lint+format) -> mypy --strict -> pytest. Eval + injection gates wire in during Phase 1.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check src tests evals
+      - name: Format check
+        run: ruff format --check src tests evals
+      - name: Typecheck (strict)
+        run: mypy src
+      - name: Test
+        run: pytest

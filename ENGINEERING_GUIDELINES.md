@@ -135,6 +135,7 @@ Domain code depends on the interface, never the concrete SDK. Swapping a vendor 
 - [ ] No duplication introduced; no dead code; no magic constants; config/prompts externalized.
 - [ ] Vendor calls sit behind their adapter interface.
 - [ ] Tests added/updated (unit + integration); evals still pass; security checklist items for the touched layer pass.
+- [ ] **Adversarial suite present** (`tests/adversarial/test_<component>.py`): malformed/empty/huge/unicode input, injection-shaped untrusted content, duplicate/out-of-order/replayed events, temporal boundaries, visibility-leak attempts, concurrency where applicable (CLAUDE.md §8). Red adversarial tests are fixed at the root, never weakened.
 - [ ] Hot paths profiled if touched; no perf/cost regression; async, pooled, non-blocking.
 - [ ] Errors handled (transient vs permanent); edge cases covered; idempotent/resumable where it's a job.
 - [ ] Observability: logs/traces/metrics present; no secrets or raw source text leaked.

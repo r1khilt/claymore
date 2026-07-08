@@ -34,7 +34,7 @@ Concretely:
   - `src/claymore/config.py` (Pydantic `BaseSettings`, env-driven).
   - **The frozen contracts** (§2 below): the `Episode` schema, the ontology entity/edge types, the port interfaces (ABCs), the user/auth model, the agent entrypoint, and the approval-gate interface. Empty implementations are fine — the *shapes* are what must be stable.
   - FastAPI app skeleton + `audit.py` skeleton.
-- **P2 (or a non-technical helper) → START-NOW human track in parallel** (`CREDENTIALS.md` top): apply for the **EIN**, stand up public **privacy-policy + ToS** HTTPS pages, start **Twilio A2P 10DLC** brand+campaign, upgrade **Granola to Business**, and grab the Phase-0 keys (Anthropic, Voyage, a Telegram bot token via @BotFather, local Docker DBs). None of this blocks code, but the 10DLC review is 10–15 days — start the clock.
+- **P2 (or a non-technical helper) → START-NOW human track in parallel** (`CREDENTIALS.md` top): upgrade **Granola to Business**, and grab the Phase-0 keys (Anthropic, Voyage, a Telegram bot token via @BotFather, local Docker DBs). ~~Twilio A2P 10DLC / EIN / privacy+ToS pages~~ — dropped for the hackathon (carrier review outlasts it; Telegram is the messaging surface, see CLAUDE.md §3). Revisit post-hackathon.
 - **Also P2 (while foundation is in flight):** pair-review the contracts (P2 depends on them most), and do a throwaway spike to de-risk Graphiti → FalkorDB locally.
 
 **Once the foundation PR is merged, and only then, split into the two tracks.** This is the single most important sequencing decision — resist the urge to start features on day 1.
@@ -181,7 +181,7 @@ The contracts let each side develop against a stand-in for the other:
 
 **Day 1**
 - P1: foundation PR — scaffold + docker-compose + config + the frozen contracts (empty impls OK). Aim to merge EOD or Day-2 AM.
-- P2: pair-review the contracts; spike Graphiti→FalkorDB locally; kick off the START-NOW human track (EIN, privacy/ToS pages, Twilio brand+campaign, Granola Business, Telegram bot token).
+- P2: pair-review the contracts; spike Graphiti→FalkorDB locally; kick off the START-NOW human track (Granola Business, Telegram bot token — Twilio/EIN/privacy-pages dropped for hackathon).
 
 **Day 2 (foundation merged → split)**
 - P1: Telegram echo bot + FastAPI `/webhook` + SMS-inbound skeleton (verify a message round-trips → half of Phase-0 exit); start `episodes.py` durable log on Postgres.

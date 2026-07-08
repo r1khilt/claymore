@@ -1,0 +1,40 @@
+# --- Secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Credentials/accounts checklist — keep out of the PUBLIC repo (no live secrets,
+# but it maps our accounts/tiers/infra). Remove this line if you decide to share it.
+CREDENTIALS.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# --- graphify knowledge graph (generated, regenerable via /graphify) ---
+graphify-out/
+
+# --- Local dev / infra ---
+*.log
+.ipynb_checkpoints/
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

@@ -111,9 +111,7 @@ async def agent(body: AgentRequest) -> StreamingResponse:
     if not settings.web_api_enabled or not key:
         return StreamingResponse(_error_stream(_UNAVAILABLE), media_type="text/event-stream")
     if not query:
-        return StreamingResponse(
-            _error_stream("empty query"), media_type="text/event-stream"
-        )
+        return StreamingResponse(_error_stream("empty query"), media_type="text/event-stream")
     return StreamingResponse(
         _event_stream(query, _settings_with_key(settings, key)), media_type="text/event-stream"
     )

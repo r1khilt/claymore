@@ -1,6 +1,6 @@
 # Claymore
 
-A **Shepherd-equivalent lab-memory agent** for research labs, plus a **bio layer**:
+A lab-memory agent for research labs, plus a **bio layer**:
 ingest a lab's scattered memory → **ask** and get an *attributed* answer → **act**
 (you just approve) → serve the lab's coding agents over **MCP** → **reach out** proactively
 → and **run the experiment** (compute first, wet-lab later, gated).

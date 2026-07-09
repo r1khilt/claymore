@@ -41,6 +41,9 @@ from claymore.domain import LabId, SourcePlatform
 from claymore.ingest.composio.sources import (
     GITHUB_COMMITS_SLUG,
     GITHUB_REPOS_SLUG,
+    SLACK_CHANNEL_TYPES,
+    SLACK_CHANNELS_SLUG,
+    SLACK_HISTORY_SLUG,
     SourceSpec,
     _first_str,
     _github_private_flag,
@@ -50,6 +53,9 @@ from claymore.ingest.composio.sources import (
     github_commits,
     github_episode,
     github_repos,
+    slack_channels,
+    slack_enrich_message,
+    slack_next_cursor,
     to_episode,
 )
 from claymore.ingest.normalize import Episode
@@ -71,6 +77,11 @@ _MAX_PAGES = 10_000
 # account can see). Bounds cost/time on an account with hundreds of repos; truncation is LOGGED,
 # never silent. Raise deliberately for a large calibrated backfill.
 _GITHUB_MAX_REPOS = 50
+
+# Same bound for the Slack 2-level flow (enumerate channels → page each channel's history): cap the
+# channels scanned per backfill so a workspace with thousands of channels can't blow the cost/time
+# budget (R6). Truncation is LOGGED, never silent. Raise deliberately for a large calibrated run.
+_SLACK_MAX_CHANNELS = 100
 
 
 class _StreamingHub(ConnectorHub):
@@ -158,12 +169,16 @@ class ComposioConnectorHub(_StreamingHub):
     async def backfill(
         self, lab_id: LabId, source: SourcePlatform, since: datetime | None = None
     ) -> AsyncIterator[Episode]:
-        # GitHub is a 2-level flow (enumerate repos → page each repo's commits), so it can't use
-        # the single-action cursor loop below; delegate to a dedicated path that shares parse +
-        # visibility + owner-injection with the fake via ``github_episode``.
+        # GitHub and Slack are 2-level flows (enumerate repos/channels → page each one's
+        # commits/history), so they can't use the single-action cursor loop below; each delegates to
+        # a dedicated path that shares parse + visibility + owner-injection with the fake.
         if source is SourcePlatform.GITHUB:
             async for github_ep in self._github_backfill(lab_id, since):
                 yield github_ep
+            return
+        if source is SourcePlatform.SLACK:
+            async for slack_ep in self._slack_backfill(lab_id, since):
+                yield slack_ep
             return
 
         spec = get_spec(source)
@@ -173,7 +188,8 @@ class ComposioConnectorHub(_StreamingHub):
         seen_cursors: set[str] = set()
 
         for _ in range(_MAX_PAGES):
-            arguments: dict[str, Any] = {spec.limit_arg: page_size}
+            # spec.extra_args carries any REQUIRED non-pagination input (e.g. Notion's fetch_type).
+            arguments: dict[str, Any] = {spec.limit_arg: page_size, **spec.extra_args}
             if cursor:
                 arguments[spec.cursor_arg] = cursor
             try:
@@ -199,7 +215,14 @@ class ComposioConnectorHub(_StreamingHub):
             data = _response_data(response)
             items = extract_items(spec, data)
             for raw in items:
-                episode = to_episode(spec, raw, lab_id, since=since, resolver=self._resolver)
+                episode = to_episode(
+                    spec,
+                    raw,
+                    lab_id,
+                    since=since,
+                    resolver=self._resolver,
+                    owner_user_id=self._user_id,  # restricted-page owner injection (Notion, R13)
+                )
                 if episode is not None:
                     yield episode
 
@@ -210,9 +233,10 @@ class ComposioConnectorHub(_StreamingHub):
             seen_cursors.add(cursor)
         logger.warning("composio.max_pages_reached", platform=source, max_pages=_MAX_PAGES)
 
-    def _github_execute(self, slug: str, arguments: dict[str, Any]) -> Mapping[str, Any] | None:
-        """Run one GitHub tool call, returning the ``data`` mapping or ``None`` if the call itself
-        failed (a fetch failure must be *skippable*, not crash the backfill)."""
+    def _composio_execute(self, slug: str, arguments: dict[str, Any]) -> Mapping[str, Any] | None:
+        """Run one Composio tool call, returning the ``data`` mapping or ``None`` if the call itself
+        failed (a fetch failure must be *skippable*, not crash the backfill). Shared by the GitHub
+        and Slack multi-level flows (both page a source with a per-call, skippable fetch)."""
         try:
             response = self._client().tools.execute(
                 slug,
@@ -266,7 +290,7 @@ class ComposioConnectorHub(_StreamingHub):
     def _github_iter_repos(self, page_size: int) -> Iterator[tuple[str, bool]]:
         """Yield ``(full_name, private)`` across the paged repo list (page-number pagination)."""
         for page in range(1, _MAX_PAGES + 1):
-            data = self._github_execute(GITHUB_REPOS_SLUG, {"per_page": page_size, "page": page})
+            data = self._composio_execute(GITHUB_REPOS_SLUG, {"per_page": page_size, "page": page})
             if data is None:  # enumeration call failed — stop (nothing to page from)
                 return
             repos = github_repos(data)
@@ -282,7 +306,7 @@ class ComposioConnectorHub(_StreamingHub):
             logger.warning("composio.github_bad_full_name", full_name=full_name)
             return
         for page in range(1, _MAX_PAGES + 1):
-            data = self._github_execute(
+            data = self._composio_execute(
                 GITHUB_COMMITS_SLUG,
                 {"owner": owner, "repo": repo, "per_page": page_size, "page": page},
             )
@@ -297,6 +321,116 @@ class ComposioConnectorHub(_StreamingHub):
             "composio.max_pages_reached",
             platform="github_commits",
             repo=full_name,
+            max_pages=_MAX_PAGES,
+        )
+
+    async def _slack_backfill(
+        self, lab_id: LabId, since: datetime | None
+    ) -> AsyncIterator[Episode]:
+        """2-level Slack backfill: enumerate channels, then stream each channel's history.
+
+        A message payload carries no channel ACL and the history call *requires* a ``channel``, so
+        we enumerate channels first (each with its privacy) and inject that context onto every
+        message before parsing — the shared ``to_episode`` path then derives visibility (R13).
+        Streams throughout (never accumulates a channel's — let alone the workspace's — full
+        history). Bounds: ``_SLACK_MAX_CHANNELS`` channels scanned and ``_MAX_PAGES`` history pages
+        **per channel**, both logged on truncation. A channel whose history fetch fails (e.g. the
+        connected account isn't a member) is skipped-with-log, never aborting the backfill. The
+        connecting user is injected into a restricted (private / DM) channel's allowlist
+        (``owner_user_id=self._user_id``) so they can retrieve their own conversations.
+        """
+        spec = get_spec(SourcePlatform.SLACK)
+        page_size = spec.default_page_size if self._page_size is None else self._page_size
+        channels_scanned = 0
+        for channel_ctx in self._slack_iter_channels(page_size):
+            if channels_scanned >= _SLACK_MAX_CHANNELS:
+                logger.warning(
+                    "composio.slack_channels_truncated",
+                    max_channels=_SLACK_MAX_CHANNELS,
+                    lab_id=lab_id,
+                )
+                return
+            channels_scanned += 1
+            for raw_msg in self._slack_iter_history(channel_ctx["channel"], page_size):
+                # Overlay the enumerated channel's context, stripping any channel/ACL keys the
+                # untrusted message carries so it cannot influence its own scope (R13). This is the
+                # sole authority on visibility; a message can't assert itself lab-wide.
+                enriched: Any = (
+                    slack_enrich_message(raw_msg, channel_ctx)
+                    if isinstance(raw_msg, Mapping)
+                    else raw_msg
+                )
+                episode = to_episode(
+                    spec,
+                    enriched,
+                    lab_id,
+                    since=since,
+                    resolver=self._resolver,
+                    owner_user_id=self._user_id,
+                )
+                if episode is not None:
+                    yield episode
+
+    def _slack_iter_channels(self, page_size: int) -> Iterator[dict[str, Any]]:
+        """Yield per-channel contexts across the paged channel list (cursor pagination).
+
+        ``exclude_archived`` trims dead channels from the pilot backfill. Stops on an empty cursor
+        or a non-advancing one; a failed enumeration call stops (nothing to page from).
+        """
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for _ in range(_MAX_PAGES):
+            # `types` is REQUIRED for completeness: conversations.list defaults to public channels
+            # only, so without it private channels / DMs / group DMs are never enumerated (R13 path
+            # would be dead in prod). exclude_archived trims dead channels from the pilot backfill.
+            arguments: dict[str, Any] = {
+                "limit": page_size,
+                "exclude_archived": True,
+                "types": SLACK_CHANNEL_TYPES,
+            }
+            if cursor:
+                arguments["cursor"] = cursor
+            data = self._composio_execute(SLACK_CHANNELS_SLUG, arguments)
+            if data is None:  # enumeration call failed — stop (nothing to page from)
+                return
+            yield from slack_channels(data)
+            cursor = slack_next_cursor(data)
+            if not cursor or cursor in seen_cursors:  # empty/non-advancing cursor ⇒ last page
+                return
+            seen_cursors.add(cursor)
+        logger.warning(
+            "composio.max_pages_reached", platform="slack_channels", max_pages=_MAX_PAGES
+        )
+
+    def _slack_iter_history(self, channel_id: str, page_size: int) -> Iterator[Mapping[str, Any]]:
+        """Yield raw message dicts for one channel (cursor pagination; a failed fetch skips it).
+
+        A channel the connected account can't read (``not_in_channel``) surfaces as a failed call
+        (``None``) or an empty page — either way this channel is skipped, never crashing the run.
+        """
+        spec = get_spec(SourcePlatform.SLACK)
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for _ in range(_MAX_PAGES):
+            arguments: dict[str, Any] = {"channel": channel_id, "limit": page_size}
+            if cursor:
+                arguments["cursor"] = cursor
+            data = self._composio_execute(SLACK_HISTORY_SLUG, arguments)
+            if data is None:  # this channel's fetch failed — skip it, don't abort the backfill
+                logger.warning("composio.slack_history_failed", channel=channel_id)
+                return
+            messages = extract_items(spec, data)
+            if not messages:  # empty page ⇒ last page
+                return
+            yield from messages
+            cursor = slack_next_cursor(data)
+            if not cursor or cursor in seen_cursors:
+                return
+            seen_cursors.add(cursor)
+        logger.warning(
+            "composio.max_pages_reached",
+            platform="slack_history",
+            channel=channel_id,
             max_pages=_MAX_PAGES,
         )
 
@@ -344,7 +478,17 @@ class FakeConnectorHub(_StreamingHub):
             page = items[start : start + self._page_size]
             for raw in page:
                 self.parsed += 1
-                episode = to_episode(spec, raw, lab_id, since=since, resolver=self._resolver)
+                # Fixtures are self-contained (Slack messages carry their own channel fields), so
+                # they flow through the SAME generic path as the live Gmail/Notion loop — including
+                # owner injection when a user_id is set (private-channel/DM owner visibility, R13).
+                episode = to_episode(
+                    spec,
+                    raw,
+                    lab_id,
+                    since=since,
+                    resolver=self._resolver,
+                    owner_user_id=self._user_id,
+                )
                 if episode is not None:
                     yield episode
 

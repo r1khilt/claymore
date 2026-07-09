@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -342,14 +342,16 @@ def _parse_github_commit(
     )
 
 
-def _inject_github_owner(episode: Episode, owner_user_id: str | None) -> Episode:
-    """Add the connecting lab user to a **private**-repo episode's allowlist (R13).
+def _inject_owner(episode: Episode, owner_user_id: str | None) -> Episode:
+    """Grant the connecting lab user visibility on a **restricted** episode (R13).
 
-    A private-repo commit parses with an empty allowlist (fail-closed), which would hide it from
+    A restricted episode with an empty (or external-only) allowlist would otherwise be hidden from
     *everyone* — including the user whose connected account we pulled it from and who demonstrably
-    has repo access. Mirroring the Gmail owner case, we grant that one ``UserId`` visibility here.
-    ``lab_wide`` (public-repo) episodes carry no allowlist and pass through untouched; if no owner
-    id is known, the episode stays fail-closed (nobody sees it) rather than opening up on a guess.
+    has access to the source object (a private repo, a private Slack channel, a Notion workspace
+    page). This is the general fail-closed-but-useful move shared by every source that can't derive
+    a per-object member list: grant that one ``UserId`` and no more. ``lab_wide`` episodes carry no
+    allowlist and pass through untouched; with no known owner the episode stays fail-closed (nobody
+    sees it) rather than opening up on a guess.
     """
     vis = episode.visibility
     if vis.lab_wide or not owner_user_id:
@@ -360,6 +362,12 @@ def _inject_github_owner(episode: Episode, owner_user_id: str | None) -> Episode
         source_label=vis.source_label,
     )
     return episode.model_copy(update={"visibility": new_vis})
+
+
+def _inject_github_owner(episode: Episode, owner_user_id: str | None) -> Episode:
+    """Private-repo owner injection — the GitHub-named alias of the generic :func:`_inject_owner`
+    (a private-repo commit parses with an empty allowlist; the connecting owner has repo access)."""
+    return _inject_owner(episode, owner_user_id)
 
 
 def github_episode(
@@ -403,14 +411,49 @@ def parse_github(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
     return _parse_github_commit(raw, full_name, _github_private_flag(raw), lab_id)
 
 
-def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
-    """Notion page → Episode.
+def _notion_title(properties: Any) -> str:
+    """Extract a Notion page's title from its ``properties`` map (calibrated to the live shape).
 
-    # CALIBRATE: Notion's real payload nests title/content under ``properties`` (rich-text
-    # arrays); the flat ``title``/``text`` keys used here are a placeholder for a live-calibrated
-    # extractor. Notion authors need a Notion-handle seed in the roster to resolve; until then
-    # they honestly stay ``unknown`` (hard rule 1).
+    A page has no flat ``title``: the title lives in whichever property has ``type == "title"``
+    (usually named "Name"/"title"), whose ``title`` value is a rich-text array of ``{plain_text}``
+    runs. We find that property and join its ``plain_text``. Defensive throughout — an absent /
+    malformed properties map degrades to ``""`` (never raises).
     """
+    if not isinstance(properties, Mapping):
+        return ""
+    for prop in properties.values():
+        if not isinstance(prop, Mapping) or prop.get("type") != "title":
+            continue
+        runs = prop.get("title")
+        if not isinstance(runs, list):
+            return ""
+        return "".join(_as_str(run.get("plain_text")) for run in runs if isinstance(run, Mapping))
+    return ""
+
+
+def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
+    """Notion page → Episode (calibrated against the live ``NOTION_FETCH_DATA`` response shape).
+
+    ``NOTION_FETCH_DATA`` returns page **metadata**, not block content, so the page **title** is the
+    episode text (full body needs a per-page ``NOTION_FETCH_ALL_BLOCK_CONTENTS`` call — a later,
+    additive enrichment). Mapping:
+
+    - Only ``object == "page"`` items become episodes; ``database``/``data_source`` results are
+      schema, not lab memory, and are skipped (``None``). A result with no ``object`` field is
+      still attempted (the id/timestamp guards below drop it if unusable).
+    - ``source_id = id`` (page UUID); ``timestamp`` from ``last_edited_time`` (fall back to
+      ``created_time``); unparseable ⇒ skip (never invent a time, R12).
+    - ``title`` from ``properties`` (:func:`_notion_title`) — there is no flat ``title`` field.
+    - ``author`` is **never guessed** (hard rule 1): ``UNKNOWN_AUTHOR`` with ``created_by``'s name
+      (or UUID) stashed in ``extra[raw_author]``. Notion's ``PartialUser`` carries no email, so a
+      Notion author resolves only with a Notion-handle seed in the roster; else stays ``unknown``.
+    - ``visibility`` fails closed (R13): ``NOTION_FETCH_DATA`` carries **no per-page ACL**, so a
+      page is restricted with an **empty** allowlist here — the hub injects the connecting owner
+      (who has workspace access) after parsing. The sole lab-wide case is a page with a
+      ``public_url`` (published to the web = strictly public), which is unambiguously lab-wide.
+    """
+    if _as_str(raw.get("object")) not in ("", "page"):
+        return None  # database / data_source result — schema, not lab memory
     source_id = _first_str(raw, "id", "page_id")
     if not source_id:
         return None
@@ -419,23 +462,17 @@ def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
     )
     if timestamp is None:
         return None
-    title = _first_str(raw, "title")
-    text = _first_str(raw, "text", "content", "plain_text") or title
-    raw_author = (
-        _as_str(_dig(raw, ("created_by", "person", "email")))
-        or _as_str(_dig(raw, ("last_edited_by", "person", "email")))
-        or _as_str(_dig(raw, ("created_by", "id")))
+    title = _notion_title(raw.get("properties")) or _first_str(raw, "title")
+    text = title  # metadata-only endpoint: title is the episode body until block content is fetched
+    raw_author = _as_str(_dig(raw, ("created_by", "name"))) or _as_str(
+        _dig(raw, ("created_by", "id"))
     )
     label = title or "notion"
-    shared = raw.get("shared")
-    public = raw.get("public")
-    workspace = _first_str(raw, "visibility").lower() == "workspace"
-    if shared is True or public is True or workspace:
+    public_url = _first_str(raw, "public_url")
+    if public_url:  # published to the web ⇒ strictly public ⇒ lab-wide memory
         visibility = Visibility(lab_wide=True, source_label=label)
-    elif shared is False or public is False:
-        visibility = _fail_closed(label, platform="notion", reason="page not shared")
-    else:
-        visibility = _fail_closed(label, platform="notion", reason="sharing state unknown")
+    else:  # no per-page ACL in the payload ⇒ fail closed; hub injects the connecting owner
+        visibility = _fail_closed(label, platform="notion", reason="no per-page ACL")
     return Episode(
         lab_id=lab_id,
         source_platform=SourcePlatform.NOTION,
@@ -443,7 +480,7 @@ def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
         author=UNKNOWN_AUTHOR,
         timestamp=timestamp,
         text=text,
-        refs=_refs(raw, ("url", "parent")),
+        refs=_refs(raw, ("url", "public_url")),
         visibility=visibility,
         is_untrusted=True,
         source_hash=_content_hash("notion", source_id, title, text),
@@ -483,6 +520,11 @@ class SourceSpec:
     default_page_size: int = 50
     """Conservative page size — backfill blows past Composio's free 1k executions (R6/§5)."""
 
+    extra_args: Mapping[str, str] = field(default_factory=dict)
+    """Fixed request args merged into *every* page call for this source. Carries a **required**
+    non-pagination input the generic loop wouldn't otherwise supply — e.g. Notion's ``fetch_type``
+    (``NOTION_FETCH_DATA`` rejects a call without it). Calibrated against the live tool schema."""
+
 
 # GitHub is a 2-level flow (enumerate repos → page each repo's commits), so it doesn't fit the
 # single-action paging the generic backfill uses; the hub drives it directly via these slugs. The
@@ -493,16 +535,38 @@ GITHUB_REPOS_PATH = ("repositories",)
 GITHUB_COMMITS_PATH = ("commits",)
 
 
-# CALIBRATE: Slack/Notion slug + items_path + cursor_path below are best-effort guesses pending a
-# live call (Gmail is live-calibrated; GitHub is commit-centric + live-calibrated, see slugs
-# above). They are isolated here so calibration is a one-line edit, not a logic change.
+# Slack is ALSO a 2-level flow (enumerate channels → page each channel's history), because a
+# message payload carries no channel metadata: SLACK_FETCH_CONVERSATION_HISTORY *requires* a
+# ``channel`` arg, and its Message items have no ``channel``/``is_private``/members fields — the
+# ACL lives on the channel object from enumeration. The hub drives this via the slugs below; the
+# channel's privacy is injected onto each message so the shared parser derives visibility (R13).
+# All shapes are live-calibrated against the connected account's tool schemas.
+SLACK_CHANNELS_SLUG = "SLACK_LIST_ALL_CHANNELS"
+SLACK_HISTORY_SLUG = "SLACK_FETCH_CONVERSATION_HISTORY"
+SLACK_CHANNELS_PATH = ("channels",)
+SLACK_MESSAGES_PATH = ("messages",)
+SLACK_CURSOR_PATH = ("response_metadata", "next_cursor")
+# ``SLACK_LIST_ALL_CHANNELS`` wraps ``conversations.list``, whose ``types`` DEFAULTS TO
+# ``public_channel`` only — so without this the backfill silently skips private channels, DMs, and
+# group DMs (their whole is_private/is_im branch + owner-injection would be dead in production). Ask
+# for all four; the connected account's granted scopes govern what actually comes back.
+SLACK_CHANNEL_TYPES = "public_channel,private_channel,mpim,im"
+
+
+# All four slugs + envelope paths below are **live-calibrated** against the connected account's tool
+# schemas (input/output_parameters), not guessed. Slack is driven as a 2-level flow by the hub (see
+# SLACK_*_SLUG) because a message payload carries no channel ACL; this spec still parses a
+# self-contained message via to_episode. Notion needs the required ``fetch_type`` injected below.
 SOURCE_SPECS: dict[SourcePlatform, SourceSpec] = {
     SourcePlatform.SLACK: SourceSpec(
+        # Driven by the hub's 2-level flow (SLACK_CHANNELS_SLUG → per-channel history) because a
+        # message carries no channel ACL; this spec keeps get_spec(SLACK)/to_episode valid for a
+        # self-contained (channel-enriched) message dict. Envelope paths match conversations.history
         platform=SourcePlatform.SLACK,
-        action_slug="SLACK_FETCH_CONVERSATION_HISTORY",
+        action_slug=SLACK_HISTORY_SLUG,
         parser=parse_slack,
-        items_path=("messages",),
-        cursor_path=("response_metadata", "next_cursor"),
+        items_path=SLACK_MESSAGES_PATH,
+        cursor_path=SLACK_CURSOR_PATH,
         cursor_arg="cursor",
         limit_arg="limit",
     ),
@@ -532,10 +596,13 @@ SOURCE_SPECS: dict[SourcePlatform, SourceSpec] = {
         platform=SourcePlatform.NOTION,
         action_slug="NOTION_FETCH_DATA",
         parser=parse_notion,
-        items_path=("results",),
+        items_path=("results",),  # full Page objects (title/timestamps/author), not thin `values`
         cursor_path=("next_cursor",),
         cursor_arg="start_cursor",
         limit_arg="page_size",
+        # ``fetch_type`` is a REQUIRED input — NOTION_FETCH_DATA errors without it. "pages" fetches
+        # page metadata (lab memory); databases/data_sources are schema and are skipped in parsing.
+        extra_args={"fetch_type": "pages"},
     ),
 }
 
@@ -594,6 +661,103 @@ def github_commits(data: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [commit for commit in found if isinstance(commit, Mapping)]
 
 
+def slack_next_cursor(data: Mapping[str, Any]) -> str | None:
+    """Slack ``response_metadata.next_cursor`` (or ``None`` if absent/empty ⇒ stop paging).
+
+    Shared by both Slack 2-level loops (channel enumeration and per-channel history) — both use
+    Slack's cursor pagination under the same envelope path.
+    """
+    cursor = _dig(data, SLACK_CURSOR_PATH)
+    return cursor if isinstance(cursor, str) and cursor else None
+
+
+def slack_channel_context(channel: Mapping[str, Any]) -> dict[str, Any]:
+    """One ``SLACK_LIST_ALL_CHANNELS`` ChannelItem → the channel context merged onto each of its
+    messages so the shared parser can derive visibility (a message carries no channel ACL, R13).
+
+    Emits the keys :func:`_slack_visibility` reads: ``channel`` (id, for ``source_id`` + the history
+    call), ``channel_name``, and — **only when the channel's privacy is known** — ``channel_type`` +
+    ``is_private``. A channel whose privacy can't be read leaves those unset, so visibility
+    **fails closed** (never lab-wide on a guess). Public channel → lab-wide; private channel / DM /
+    multi-person DM → restricted (the hub injects the connecting owner, who is a member).
+    """
+    ctx: dict[str, Any] = {
+        "channel": _first_str(channel, "id"),
+        "channel_name": _first_str(channel, "name", "name_normalized"),
+    }
+    is_im = channel.get("is_im") is True
+    is_mpim = channel.get("is_mpim") is True
+    private = channel.get("is_private")
+    if is_im or is_mpim:  # direct / multi-person DM — restricted to its members
+        ctx["channel_type"] = "im" if is_im else "mpim"
+        ctx["is_private"] = True
+    elif private is True:  # private channel — restricted
+        ctx["channel_type"] = "private_channel"
+        ctx["is_private"] = True
+    elif private is False:  # public channel — lab-wide memory
+        ctx["channel_type"] = "channel"
+        ctx["is_private"] = False
+    # else: privacy unknown ⇒ leave unset ⇒ _slack_visibility fails closed (R13)
+    return ctx
+
+
+# The channel/ACL keys that determine a Slack message's SCOPE (channel identity + privacy). In the
+# 2-level flow these MUST come from the enumerated channel, never from the untrusted message body —
+# else a message asserting its own ``is_private=False`` would widen a restricted (or unknown,
+# fail-closed) channel to lab-wide, defeating R13 / SECURITY.md rule 1. ``slack_enrich_message``
+# strips them from the message so the channel is the SOLE scope authority.
+_SLACK_CHANNEL_KEYS = frozenset(
+    {
+        "channel",
+        "channel_id",
+        "channel_name",
+        "channel_type",
+        "conversation_type",
+        "is_private",
+        "is_im",
+        "members",
+        "participants",
+        "users",
+    }
+)
+
+
+def slack_enrich_message(
+    raw_msg: Mapping[str, Any], channel_ctx: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Overlay the enumerated channel's context onto one message, ready for the shared parser.
+
+    Security-critical (R13 / SECURITY.md rule 1): the untrusted message must not influence its own
+    scope. We first **strip every channel/ACL key** (:data:`_SLACK_CHANNEL_KEYS`) the message might
+    carry, then overlay ``channel_ctx`` — so channel identity + privacy come only from enumeration.
+    Crucially this closes the fail-closed hole: when a channel's privacy is undeterminable,
+    ``channel_ctx`` omits ``is_private``/``channel_type`` on purpose, and stripping guarantees the
+    message can't supply them either → :func:`_slack_visibility` fails closed. Non-scope fields
+    (``ts``, ``text``, author, ``thread_ts``, ...) pass through untouched.
+    """
+    cleaned = {k: v for k, v in raw_msg.items() if k not in _SLACK_CHANNEL_KEYS}
+    return {**cleaned, **channel_ctx}
+
+
+def slack_channels(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Channel contexts for each channel in a ``LIST_ALL_CHANNELS`` response (defensive: ``[]``).
+
+    Skips a channel with no id (can't fetch its history or key its messages). Used by the hub's
+    2-level Slack flow to drive per-channel history paging + message enrichment.
+    """
+    found = _dig(data, SLACK_CHANNELS_PATH)
+    if not isinstance(found, list):
+        return []
+    contexts: list[dict[str, Any]] = []
+    for channel in found:
+        if not isinstance(channel, Mapping):
+            continue
+        ctx = slack_channel_context(channel)
+        if ctx["channel"]:
+            contexts.append(ctx)
+    return contexts
+
+
 # --------------------------------------------------------------------------------------------
 # The single parse+scope+resolve+filter path shared by BOTH hubs (DRY): defensive, never raises.
 # --------------------------------------------------------------------------------------------
@@ -606,13 +770,19 @@ def to_episode(
     *,
     since: datetime | None = None,
     resolver: IdentityResolver | None = None,
+    owner_user_id: str | None = None,
 ) -> Episode | None:
-    """Parse one raw item → Episode, apply ``since`` + identity resolution; ``None`` to skip.
+    """Parse one raw item → Episode, apply ``since`` + identity + owner injection; ``None`` to skip.
 
     A malformed item (parser returns ``None`` or *raises* on an unexpected shape) is logged and
     skipped — one bad item must never abort a backfill (§2, R6). ``since`` is an inclusive lower
     bound on source time. If ``resolver`` is set, the author is resolved inline (else the raw
-    handle stays in ``extra`` for a later identity pass).
+    handle stays in ``extra`` for a later identity pass). If ``owner_user_id`` is set, the
+    connecting user is granted visibility on a **restricted** episode whose allowlist would
+    otherwise hide it from everyone including its owner (:func:`_inject_owner`, R13) — the shared
+    fail-closed-but-useful move for the sources whose payload carries no per-object member list
+    (private Slack channels, Notion workspace pages). It is a no-op for ``lab_wide`` episodes and
+    for restricted episodes where the owner already resolved into the allowlist (Gmail).
     """
     try:
         episode = spec.parser(raw, lab_id)
@@ -627,6 +797,8 @@ def to_episode(
     if resolver is not None:
         episode = resolver.resolve_episode(episode)
         episode = _resolve_visibility_participants(episode, spec.platform, resolver)
+    if owner_user_id:
+        episode = _inject_owner(episode, owner_user_id)
     return episode
 
 

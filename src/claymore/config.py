@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr = SecretStr("")
     voyage_api_key: SecretStr = SecretStr("")
     telegram_bot_token: SecretStr = SecretStr("")
+    telegram_webhook_secret: SecretStr = SecretStr("")
+    """Random secret registered with ``setWebhook``; Telegram echoes it on every delivery."""
+    telegram_enrollments: str = ""
+    """Demo roster: comma-separated ``telegram_user_id:lab_id:user_id`` triples."""
     database_url: str = "postgresql+asyncpg://claymore:claymore@localhost:5432/claymore"
     redis_url: str = "redis://localhost:6380/0"
     falkordb_uri: str = "redis://localhost:6379"
@@ -43,6 +47,13 @@ class Settings(BaseSettings):
     twilio_auth_token: SecretStr = SecretStr("")
     twilio_messaging_service_sid: str = ""
     twilio_phone_number: str = ""
+    twilio_whatsapp_from: str = ""
+    """Twilio WhatsApp sender, bare E.164 (sandbox default is +14155238886)."""
+    whatsapp_enrollments: str = ""
+    """Demo roster until the Postgres enrollment table lands: comma-separated
+    ``phone:lab_id:user_id`` triples allowed to talk to the agent over WhatsApp."""
+    public_base_url: str = ""
+    """Public origin Twilio signs webhook URLs against (e.g. an ngrok/Fly URL); empty = as-seen."""
 
     # --- execution (Phase 3) ---
     modal_token_id: SecretStr = SecretStr("")

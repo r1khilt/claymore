@@ -1,0 +1,142 @@
+@import 'tailwindcss';
+
+/* ============================================================================
+   Claymore — design tokens. Tailwind v4 reads @theme and generates utilities
+   (--color-sage-500 -> bg-sage-500 / text-sage-500, --font-serif -> font-serif).
+   Aesthetic: airy, warm-neutral canvas, frosted glass, one botanical accent.
+   ========================================================================== */
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Instrument Serif', ui-serif, Georgia, 'Times New Roman', serif;
+  --font-imsg: -apple-system, 'SF Pro Text', 'Helvetica Neue', ui-sans-serif, sans-serif;
+
+  /* canvas + ink */
+  --color-canvas: #f4f2ec;
+  --color-ink: #1c1d18;
+  --color-muted: #6f7268;
+  --color-faint: #a2a498;
+  --color-line: rgba(28, 29, 24, 0.08);
+  --color-line-strong: rgba(28, 29, 24, 0.14);
+
+  /* botanical accent (sage) + warm amber highlight */
+  --color-sage-50: #eff4ee;
+  --color-sage-100: #dde9de;
+  --color-sage-200: #c2d8c5;
+  --color-sage-300: #9cc0a4;
+  --color-sage-400: #6ba079;
+  --color-sage-500: #3f7d5c;
+  --color-sage-600: #34694c;
+  --color-sage-700: #2a543d;
+  --color-amber-400: #dca059;
+  --color-amber-500: #c67f3d;
+  --color-clay-500: #b4623f;
+
+  /* source brand hues (right-rail panels + citation chips) */
+  --color-slack: #4a154b;
+  --color-gmail: #ea4335;
+  --color-github: #1f2328;
+  --color-notion: #2f2c28;
+  --color-imessage: #0a84ff;
+  --color-sms: #34c759;
+  --color-granola: #0f766e;
+
+  /* iMessage thread (iOS 17 kit) — bubble fills + secondary label, not brand hues */
+  --color-imsg-blue: #248bf5;
+  --color-imsg-gray: #e9e9eb;
+  --color-imsg-label: #8e8e93;
+
+  --radius-lg: 0.85rem;
+  --radius-xl: 1.15rem;
+  --radius-2xl: 1.6rem;
+  --radius-3xl: 2rem;
+
+  --shadow-glass: 0 1px 2px rgba(28, 29, 24, 0.04), 0 12px 40px -14px rgba(28, 29, 24, 0.16);
+  --shadow-raised: 0 1px 2px rgba(28, 29, 24, 0.05), 0 24px 60px -18px rgba(28, 29, 24, 0.22);
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-line);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--color-sage-500) 22%, transparent);
+  }
+  /* soft, quiet scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(28, 29, 24, 0.16) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(28, 29, 24, 0.14);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(28, 29, 24, 0.26);
+    background-clip: padding-box;
+  }
+}
+
+@layer components {
+  /* Frosted glass surfaces — the core material of the UI. */
+  .glass {
+    background: rgba(255, 255, 255, 0.55);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    box-shadow: var(--shadow-glass);
+  }
+  .glass-quiet {
+    background: rgba(255, 255, 255, 0.42);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+  }
+  .glass-raised {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(30px) saturate(165%);
+    -webkit-backdrop-filter: blur(30px) saturate(165%);
+    border: 1px solid rgba(255, 255, 255, 0.82);
+    box-shadow: var(--shadow-raised);
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  /* fade the bottom edge of a scroll region into the canvas */
+  .mask-fade-b {
+    -webkit-mask-image: linear-gradient(to bottom, black 82%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 82%, transparent 100%);
+  }
+  .mask-fade-y {
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 94%, transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 94%, transparent 100%);
+  }
+}

@@ -1,24 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Loader2, Plus, ArrowUpRight } from 'lucide-react'
-import type { Reply } from '@/lib/types'
-import { ask } from '@/lib/api'
-import { exampleQueries } from '@/lib/mockData'
-import { protocolFor, type Protocol } from '@/lib/protocol'
+import { Plus, ArrowUpRight } from 'lucide-react'
+import type { AgentEvent } from '@/lib/agent'
+import { agentStream } from '@/lib/agent'
+import type { Protocol } from '@/lib/protocol'
 import { AskBox } from './AskBox'
-import { AnswerView } from './AnswerView'
-import { ProtocolCard } from './ProtocolCard'
+import { AgentTurn } from './AgentTurn'
 
 interface Turn {
   q: string
-  reply?: Reply
-  protocol?: Protocol
+  events: AgentEvent[]
+  running: boolean
 }
+
+const SUGGESTIONS = [
+  'Fill a 96-well plate with buffer',
+  'Set up a PCR plate on the thermocycler',
+  'Did we ever test the Y hypothesis?',
+  'Dock the CBX2 fragment library',
+]
 
 function Suggestions({ onPick }: { onPick: (q: string) => void }) {
   return (
     <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-      {exampleQueries.map((q, i) => (
+      {SUGGESTIONS.map((q, i) => (
         <motion.button
           key={q}
           initial={{ opacity: 0, y: 6 }}
@@ -35,65 +40,30 @@ function Suggestions({ onPick }: { onPick: (q: string) => void }) {
   )
 }
 
-function Thinking() {
-  return (
-    <div className="flex items-center gap-2.5 text-[14px] text-muted">
-      <Loader2 className="size-4 animate-spin text-sage-500" strokeWidth={2.25} />
-      <span className="relative overflow-hidden">
-        Searching the lab’s memory
-        <span className="ml-0.5 inline-flex">
-          <span className="animate-pulse">…</span>
-        </span>
-      </span>
-    </div>
-  )
-}
-
 export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => void }) {
   const [value, setValue] = useState('')
   const [turns, setTurns] = useState<Turn[]>([])
-  const [loading, setLoading] = useState(false)
-  const abortRef = useRef<AbortController | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const [busy, setBusy] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [turns, loading])
+  }, [turns])
 
   async function submit(raw?: string) {
     const q = (raw ?? value).trim()
-    if (!q || loading) return
-
-    // Opentrons intent -> generate a protocol instead of a text answer.
-    const proto = protocolFor(q)
-    if (proto) {
-      setValue('')
-      setTurns((t) => [...t, { q, protocol: proto }])
-      return
-    }
-
+    if (!q || busy) return
     setValue('')
-    setTurns((t) => [...t, { q }])
-    setLoading(true)
-    abortRef.current?.abort()
-    const ac = new AbortController()
-    abortRef.current = ac
+    const idx = turns.length
+    setTurns((t) => [...t, { q, events: [], running: true }])
+    setBusy(true)
     try {
-      const reply = await ask(q, ac.signal)
-      setTurns((t) => t.map((turn, i) => (i === t.length - 1 ? { ...turn, reply } : turn)))
-    } catch (err) {
-      if ((err as Error)?.name !== 'AbortError') {
-        setTurns((t) =>
-          t.map((turn, i) =>
-            i === t.length - 1
-              ? { ...turn, reply: { text: 'Something went wrong reaching memory.', citations: [] } }
-              : turn,
-          ),
-        )
+      for await (const ev of agentStream(q)) {
+        setTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, events: [...turn.events, ev] } : turn)))
       }
     } finally {
-      setLoading(false)
+      setTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, running: false } : turn)))
+      setBusy(false)
     }
   }
 
@@ -116,8 +86,8 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
           transition={{ delay: 0.12 }}
           className="mt-3.5 max-w-md text-center text-[15px] leading-relaxed text-muted text-balance"
         >
-          Ask anything your lab has said, written, or committed — get an answer with every source
-          cited.
+          Ask the lab, run an analysis, or drive the robot — one agent, working across every source,
+          every answer cited.
         </motion.p>
         <motion.div
           initial={{ opacity: 0, y: 10 }}
@@ -125,7 +95,7 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
           transition={{ delay: 0.08, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
           className="mt-9 w-full max-w-[660px]"
         >
-          <AskBox value={value} onChange={setValue} onSubmit={() => submit()} loading={loading} autoFocus />
+          <AskBox value={value} onChange={setValue} onSubmit={() => submit()} loading={busy} autoFocus />
           <Suggestions onPick={submit} />
         </motion.div>
       </div>
@@ -135,11 +105,10 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-6 pt-5">
-        <span className="text-[12px] font-medium uppercase tracking-[0.12em] text-faint">
-          Conversation
-        </span>
+        <span className="text-[12px] font-medium uppercase tracking-[0.12em] text-faint">Composer</span>
         <button
           onClick={() => {
+            if (busy) return
             setTurns([])
             setValue('')
           }}
@@ -150,27 +119,14 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
         </button>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[720px] flex-col gap-9 px-6 py-7">
           {turns.map((turn, i) => (
             <div key={i} className="flex flex-col gap-4">
               <h2 className="text-[22px] font-medium leading-snug tracking-tight text-ink text-balance">
                 {turn.q}
               </h2>
-              {turn.protocol ? (
-                <div className="flex flex-col gap-3">
-                  <p className="text-[15px] leading-relaxed text-ink/80">
-                    Here’s an Opentrons protocol for that — generated as a{' '}
-                    <span className="font-medium text-ink">dry-run simulation</span>. Open the Bench to
-                    watch it run.
-                  </p>
-                  <ProtocolCard protocol={turn.protocol} onOpen={() => onOpenProtocol(turn.protocol!)} />
-                </div>
-              ) : turn.reply ? (
-                <AnswerView reply={turn.reply} />
-              ) : i === turns.length - 1 && loading ? (
-                <Thinking />
-              ) : null}
+              <AgentTurn events={turn.events} running={turn.running} onOpenProtocol={onOpenProtocol} />
             </div>
           ))}
           <div ref={endRef} />
@@ -183,8 +139,8 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
             value={value}
             onChange={setValue}
             onSubmit={() => submit()}
-            loading={loading}
-            placeholder="Ask a follow-up…"
+            loading={busy}
+            placeholder="Ask a follow-up, or give the agent a task…"
           />
         </div>
       </div>

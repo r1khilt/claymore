@@ -276,62 +276,131 @@ def parse_gmail(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
     )
 
 
-def _github_visibility(raw: Mapping[str, Any], label: str) -> Visibility:
-    """GitHub repo ACL → Visibility. Public repo → lab-wide; private/unknown → fail closed.
+def _github_private_flag(raw: Mapping[str, Any]) -> bool:
+    """Read a repo's privacy flag, failing closed on anything but an explicit ``False`` (R13).
 
-    A private repo's collaborator set isn't on the item, so we fail closed (restricted, empty
-    allowlist) rather than assume the whole lab can see it (R13).
+    A missing/ambiguous ``private`` means we cannot *prove* the repo is public, so we treat it as
+    private (restricted) rather than open it up on a guess. The live 2-level flow always supplies
+    an explicit bool from repo enumeration; this only guards a malformed/self-contained dict.
     """
-    private = raw.get("private")
-    if private is None:
-        private = _dig(raw, ("repository", "private"))
-    vis = (
-        _first_str(raw, "visibility") or _as_str(_dig(raw, ("repository", "visibility")))
-    ).lower()
-    if private is False or vis == "public":
-        return Visibility(lab_wide=True, source_label=label)
-    if private is True or vis in {"private", "internal"}:
-        return _fail_closed(label, platform="github", reason="private repo, no collaborator list")
-    return _fail_closed(label, platform="github", reason="repo visibility unknown")
+    val = raw.get("private")
+    return val if isinstance(val, bool) else True
 
 
-def parse_github(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
-    """GitHub issue/PR/commit → Episode (defensive across those shapes).
+def _parse_github_commit(
+    raw_commit: Mapping[str, Any], full_name: str, private: bool, lab_id: LabId
+) -> Episode | None:
+    """One GitHub commit → :class:`Episode`. Repo identity (``full_name``/``private``) is passed in
+    from the repo-enumeration step, not read off the commit (which doesn't carry it).
 
-    # CALIBRATE: exact GITHUB_* slug + shape (issue vs commit) — nested ``commit.author`` and
-    # ``user.login`` paths below are guesses; confirm the response envelope live.
+    Commits are the chosen GitHub signal for lab memory — a commit is a durable, attributable
+    record of *work done* (issues/PRs are a later, additive source). Mapping (verified against the
+    live ``GITHUB_LIST_COMMITS`` shape):
+
+    - ``source_id = "{full_name}@{sha}"`` — stable + globally unique per commit.
+    - ``author`` is **never guessed** (hard rule 1): ``UNKNOWN_AUTHOR`` with the raw handle stashed
+      in ``extra[raw_author]`` for identity resolution. Prefer the GitHub user login
+      (``author.login``); fall back to the git-metadata email (``commit.author.email``) when the
+      commit isn't linked to a GitHub account (``author`` is ``null``).
+    - ``text`` is the commit message (``""`` if blank — still a real episode).
+    - ``timestamp`` from ``commit.author.date``; unparseable ⇒ skip (never invent a time, R12).
+    - ``visibility`` fails closed (R13): a **public** repo is lab-wide memory; a **private** repo
+      is restricted with an **empty** allowlist here — the hub injects the connecting owner (who
+      demonstrably has access) after parsing (see ``github_episode`` / hub owner-injection).
     """
-    source_id = _first_ident(raw, "sha", "id", "node_id", "number") or _first_str(raw, "html_url")
-    if not source_id:
+    sha = _first_str(raw_commit, "sha")
+    if not sha:
         return None
-    timestamp = parse_timestamp(
-        raw.get("created_at") or _dig(raw, ("commit", "author", "date")) or raw.get("updated_at")
-    )
+    timestamp = parse_timestamp(_dig(raw_commit, ("commit", "author", "date")))
     if timestamp is None:
         return None
-    title = _first_str(raw, "title")
-    body = _first_str(raw, "body", "message") or _as_str(_dig(raw, ("commit", "message")))
-    text = f"{title}\n\n{body}".strip() if title else body
-    raw_author = (
-        _as_str(_dig(raw, ("user", "login")))
-        or _as_str(_dig(raw, ("author", "login")))
-        or _as_str(_dig(raw, ("commit", "author", "name")))
-        or _first_str(raw, "login")
+    message = _as_str(_dig(raw_commit, ("commit", "message")))
+    login = _as_str(_dig(raw_commit, ("author", "login")))
+    email = _as_str(_dig(raw_commit, ("commit", "author", "email")))
+    raw_author = login or email
+    html_url = _first_str(raw_commit, "html_url")
+    label = full_name or "github"
+    visibility = (
+        Visibility(lab_wide=False, source_label=label)  # private → owner injected by the hub
+        if private
+        else Visibility(lab_wide=True, source_label=label)  # public repo = lab-wide memory
     )
-    repo = _first_str(raw, "repository", "repo") or _as_str(_dig(raw, ("repository", "full_name")))
     return Episode(
         lab_id=lab_id,
         source_platform=SourcePlatform.GITHUB,
-        source_id=source_id,
+        source_id=f"{full_name}@{sha}",
         author=UNKNOWN_AUTHOR,
         timestamp=timestamp,
-        text=text,
-        refs=_refs(raw, ("html_url", "url", "repository")),
-        visibility=_github_visibility(raw, repo or "github"),
+        text=message,
+        refs=tuple(ref for ref in (full_name, sha, html_url) if ref),
+        visibility=visibility,
         is_untrusted=True,
-        source_hash=_content_hash("github", source_id, text),
-        extra=_base_extra(raw_author, repo=repo),
+        source_hash=_content_hash(full_name, sha, message),
+        extra=_base_extra(
+            raw_author, repo=full_name, sha=sha, private="true" if private else "false"
+        ),
     )
+
+
+def _inject_github_owner(episode: Episode, owner_user_id: str | None) -> Episode:
+    """Add the connecting lab user to a **private**-repo episode's allowlist (R13).
+
+    A private-repo commit parses with an empty allowlist (fail-closed), which would hide it from
+    *everyone* — including the user whose connected account we pulled it from and who demonstrably
+    has repo access. Mirroring the Gmail owner case, we grant that one ``UserId`` visibility here.
+    ``lab_wide`` (public-repo) episodes carry no allowlist and pass through untouched; if no owner
+    id is known, the episode stays fail-closed (nobody sees it) rather than opening up on a guess.
+    """
+    vis = episode.visibility
+    if vis.lab_wide or not owner_user_id:
+        return episode
+    new_vis = Visibility(
+        lab_wide=False,
+        allowed_user_ids=vis.allowed_user_ids | {owner_user_id},
+        source_label=vis.source_label,
+    )
+    return episode.model_copy(update={"visibility": new_vis})
+
+
+def github_episode(
+    raw_commit: Any,
+    full_name: str,
+    private: bool,
+    lab_id: LabId,
+    *,
+    since: datetime | None = None,
+    owner_user_id: str | None = None,
+    resolver: IdentityResolver | None = None,
+) -> Episode | None:
+    """Parse one commit → Episode + apply ``since`` / owner-injection / identity — the single path
+    shared by BOTH the live 2-level backfill and :class:`FakeConnectorHub` (DRY, mirrors
+    :func:`to_episode` for the other sources). Never raises: a malformed commit is logged + skipped
+    (one bad commit must never abort a backfill, §2/R6).
+    """
+    try:
+        episode = _parse_github_commit(raw_commit, full_name, private, lab_id)
+    except Exception as exc:  # untrusted, arbitrarily-shaped input: degrade, don't crash
+        logger.warning("composio.parse_error", platform="github", error=str(exc))
+        return None
+    if episode is None:
+        logger.info("composio.item_skipped", platform="github")
+        return None
+    if since is not None and ensure_aware(episode.timestamp) < ensure_aware(since):
+        return None
+    episode = _inject_github_owner(episode, owner_user_id)
+    if resolver is not None:
+        episode = resolver.resolve_episode(episode)
+    return episode
+
+
+def parse_github(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
+    """Adapter so a self-contained commit dict (one carrying its own ``full_name``/``private``)
+    parses through the generic :func:`to_episode` path too. The live flow calls
+    :func:`github_episode` directly with repo metadata from enumeration; this covers a direct
+    ``to_episode`` call and keeps ``get_spec(GITHUB)`` a valid, testable spec.
+    """
+    full_name = _first_str(raw, "full_name") or _as_str(_dig(raw, ("repository", "full_name")))
+    return _parse_github_commit(raw, full_name, _github_private_flag(raw), lab_id)
 
 
 def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
@@ -415,8 +484,18 @@ class SourceSpec:
     """Conservative page size — backfill blows past Composio's free 1k executions (R6/§5)."""
 
 
-# CALIBRATE: every slug + items_path + cursor_path below is a best-effort guess pending a live
-# Composio call. They are isolated here so calibration is a one-line edit, not a logic change.
+# GitHub is a 2-level flow (enumerate repos → page each repo's commits), so it doesn't fit the
+# single-action paging the generic backfill uses; the hub drives it directly via these slugs. The
+# shapes here are calibrated against the live connected account (not guesses).
+GITHUB_REPOS_SLUG = "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER"
+GITHUB_COMMITS_SLUG = "GITHUB_LIST_COMMITS"
+GITHUB_REPOS_PATH = ("repositories",)
+GITHUB_COMMITS_PATH = ("commits",)
+
+
+# CALIBRATE: Slack/Notion slug + items_path + cursor_path below are best-effort guesses pending a
+# live call (Gmail is live-calibrated; GitHub is commit-centric + live-calibrated, see slugs
+# above). They are isolated here so calibration is a one-line edit, not a logic change.
 SOURCE_SPECS: dict[SourcePlatform, SourceSpec] = {
     SourcePlatform.SLACK: SourceSpec(
         platform=SourcePlatform.SLACK,
@@ -437,11 +516,15 @@ SOURCE_SPECS: dict[SourcePlatform, SourceSpec] = {
         limit_arg="max_results",
     ),
     SourcePlatform.GITHUB: SourceSpec(
+        # GitHub's 2-level flow is driven by the hub (see GITHUB_*_SLUG); this spec exists so
+        # get_spec(GITHUB) is valid and a self-contained commit dict can route through to_episode.
+        # Commits are the chosen signal (issues/PRs are a later, additive source). Page-number
+        # pagination (page=1,2,…; stop on empty page) — GitHub has no next_cursor.
         platform=SourcePlatform.GITHUB,
-        action_slug="GITHUB_LIST_REPOSITORY_ISSUES",
+        action_slug=GITHUB_COMMITS_SLUG,
         parser=parse_github,
-        items_path=("issues",),
-        cursor_path=("next_cursor",),
+        items_path=GITHUB_COMMITS_PATH,
+        cursor_path=(),  # page-number pagination, no cursor — the hub increments `page` itself
         cursor_arg="page",
         limit_arg="per_page",
     ),
@@ -482,6 +565,33 @@ def extract_cursor(spec: SourceSpec, data: Mapping[str, Any]) -> str | None:
     """Pull the next-page cursor, or ``None`` if absent/empty (⇒ stop paging)."""
     cursor = _dig(data, spec.cursor_path)
     return cursor if isinstance(cursor, str) and cursor else None
+
+
+def github_repos(data: Mapping[str, Any]) -> list[tuple[str, bool]]:
+    """``(full_name, private)`` for each repo in a ``LIST_REPOSITORIES`` response.
+
+    Defensive (``[]`` if malformed) and fail-closed on privacy (:func:`_github_private_flag`).
+    Used by the hub's 2-level GitHub flow to drive per-repo commit paging.
+    """
+    found = _dig(data, GITHUB_REPOS_PATH)
+    if not isinstance(found, list):
+        return []
+    repos: list[tuple[str, bool]] = []
+    for repo in found:
+        if not isinstance(repo, Mapping):
+            continue
+        full_name = _first_str(repo, "full_name")
+        if full_name:
+            repos.append((full_name, _github_private_flag(repo)))
+    return repos
+
+
+def github_commits(data: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Raw commit dicts from a ``LIST_COMMITS`` response (defensive: ``[]`` if malformed)."""
+    found = _dig(data, GITHUB_COMMITS_PATH)
+    if not isinstance(found, list):
+        return []
+    return [commit for commit in found if isinstance(commit, Mapping)]
 
 
 # --------------------------------------------------------------------------------------------

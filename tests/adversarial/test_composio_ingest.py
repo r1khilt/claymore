@@ -86,14 +86,17 @@ async def test_unknown_acl_fails_closed() -> None:
 
 
 async def test_private_github_repo_fails_closed() -> None:
+    # A private-repo commit with NO owner injected (no user_id on the hub) is visible to nobody.
     item = {
-        "id": 5,
-        "title": "secret",
-        "body": "x",
-        "user": {"login": "lucas-dev"},
-        "created_at": "2026-03-03T12:00:00Z",
-        "repository": "lab/secret",
+        "full_name": "lab/secret",
         "private": True,
+        "sha": "sec1",
+        "html_url": "https://github.com/lab/secret/commit/sec1",
+        "author": {"login": "lucas-dev"},
+        "commit": {
+            "author": {"email": "lucas@lab.org", "date": "2026-03-03T12:00:00Z"},
+            "message": "secret work",
+        },
     }
     hub = FakeConnectorHub({SourcePlatform.GITHUB: [item]})
     [ep] = await _collect(hub, SourcePlatform.GITHUB)

@@ -66,16 +66,20 @@ GMAIL_ITEMS = [
         "messageTimestamp": "2026-03-03T12:00:00Z",
     }
 ]
+# GitHub's chosen signal is commits (issues/PRs are a later, additive source). Fake fixtures are
+# already-associated commit dicts carrying their own full_name/private (no repo-enumeration
+# round-trip) — see FakeConnectorHub._github_backfill. Dedicated coverage: tests/test_github_ingest.
 GITHUB_ITEMS = [
     {
-        "id": 42,
-        "number": 7,
-        "title": "Docking pipeline",
-        "body": "latest run green",
-        "user": {"login": "lucas-dev"},
-        "created_at": "2026-03-03T12:00:00Z",
-        "repository": "lab/repo",
+        "full_name": "lab/repo",
         "private": False,
+        "sha": "abc123",
+        "html_url": "https://github.com/lab/repo/commit/abc123",
+        "author": {"login": "lucas-dev"},
+        "commit": {
+            "author": {"name": "Lucas", "email": "lucas@lab.org", "date": "2026-03-03T12:00:00Z"},
+            "message": "Docking pipeline: latest run green",
+        },
     }
 ]
 
@@ -126,11 +130,11 @@ async def test_gmail_backfill_provenance_and_participants() -> None:
 
 
 async def test_github_backfill_provenance() -> None:
-    [issue] = await _collect(_hub(), SourcePlatform.GITHUB)
-    assert issue.source_platform is SourcePlatform.GITHUB
-    assert issue.source_id == "42"  # int id stringified
-    assert issue.extra[RAW_AUTHOR_KEY] == "lucas-dev"
-    assert "Docking pipeline" in issue.text
+    [commit] = await _collect(_hub(), SourcePlatform.GITHUB)
+    assert commit.source_platform is SourcePlatform.GITHUB
+    assert commit.source_id == "lab/repo@abc123"  # full_name@sha, stable + unique per commit
+    assert commit.extra[RAW_AUTHOR_KEY] == "lucas-dev"  # author.login, never guessed at parse time
+    assert "Docking pipeline" in commit.text  # text is the commit message
 
 
 # --- ACL → visibility (R13) ---
@@ -161,9 +165,9 @@ async def test_email_is_restricted_not_lab_wide() -> None:
 
 
 async def test_public_github_repo_is_lab_wide() -> None:
-    [issue] = await _collect(_hub(), SourcePlatform.GITHUB)
-    assert issue.visibility.lab_wide is True
-    assert issue.visibility.source_label == "lab/repo"
+    [commit] = await _collect(_hub(), SourcePlatform.GITHUB)
+    assert commit.visibility.lab_wide is True  # a lab's public repo = lab-wide memory
+    assert commit.visibility.source_label == "lab/repo"
 
 
 # --- identity resolution (R11): raw handle → canonical person when a resolver is provided ---
@@ -179,9 +183,9 @@ async def test_resolver_maps_slack_handle_to_person() -> None:
 async def test_resolver_maps_gmail_and_github() -> None:
     resolver = IdentityResolver(LAB, ROSTER)
     [email] = await _collect(_hub(resolver=resolver), SourcePlatform.GMAIL)
-    [issue] = await _collect(_hub(resolver=resolver), SourcePlatform.GITHUB)
+    [commit] = await _collect(_hub(resolver=resolver), SourcePlatform.GITHUB)
     assert email.author == "p_lucas"  # "Lucas <lucas@lab.org>" → gmail handle → p_lucas
-    assert issue.author == "p_lucas"  # "lucas-dev" → github login → p_lucas
+    assert commit.author == "p_lucas"  # "lucas-dev" → github login → p_lucas
 
 
 async def test_without_resolver_author_stays_unknown_but_raw_kept() -> None:

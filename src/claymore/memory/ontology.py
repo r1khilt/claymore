@@ -90,6 +90,12 @@ class Fact(BaseModel):
     edge: EdgeType
     object_id: str
 
+    statement: str = ""
+    """Human-readable natural-language rendering of the fact (e.g. Graphiti's ``EntityEdge.fact``,
+    or the originating message text). ``subject_id``/``object_id`` may be opaque node ids, so this
+    is what the agent surfaces and cites. Optional + defaults to ``""`` for back-compat; treated
+    strictly as data, never instructions (SECURITY.md rule 7)."""
+
     valid_from: datetime
     valid_to: datetime | None = None
     """``None`` = still valid. Set when a later fact supersedes this one (R12)."""

@@ -55,7 +55,8 @@ async def test_fakellm_received_the_retrieved_facts() -> None:
     # The retrieved facts (their provenance) are in the prompt the model phrases from.
     assert "m1" in prompt
     assert "p_lucas" in prompt
-    assert "Y-hypothesis" in prompt
+    # The readable fact statement (the message content) is what the model phrases from.
+    assert "hypothesis" in prompt.lower()
     # The system prompt forbids inventing sources.
     assert "citation" in system.lower()
 

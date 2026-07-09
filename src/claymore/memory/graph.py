@@ -190,6 +190,7 @@ class InMemoryMemoryStore(MemoryStore):
                         subject_id=subject,
                         edge=EdgeType.AUTHORED_BY,
                         object_id=episode.author,
+                        statement=episode.text,
                         valid_from=provenance.timestamp,
                         provenance=provenance,
                         visibility=episode.visibility,
@@ -204,6 +205,7 @@ class InMemoryMemoryStore(MemoryStore):
                         subject_id=subject,
                         edge=EdgeType.MENTIONS,
                         object_id=ref,
+                        statement=episode.text,
                         valid_from=provenance.timestamp,
                         provenance=provenance,
                         visibility=episode.visibility,
@@ -402,6 +404,10 @@ class GraphitiMemoryStore(MemoryStore):
                     subject_id=edge.source_node_uuid,
                     edge=edge_type,
                     object_id=edge.target_node_uuid,
+                    # Graphiti's ``EntityEdge.fact`` is the natural-language statement the LLM
+                    # extracted (e.g. "Voyage AI offers embedding models") — the readable content
+                    # the agent actually answers and cites from, since the node ids are opaque.
+                    statement=getattr(edge, "fact", "") or "",
                     valid_from=ensure_aware(edge.valid_at or provenance.timestamp),
                     valid_to=ensure_aware(edge.invalid_at) if edge.invalid_at else None,
                     provenance=provenance,

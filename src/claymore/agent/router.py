@@ -229,12 +229,18 @@ def _last_user_query(session: Session | None) -> str:
 
 
 def _fact_line(fact: Fact) -> str:
-    """One provenance-bearing fact rendered for the prompt context (data only, not instructions)."""
+    """One provenance-bearing fact rendered for the prompt context (data only, not instructions).
+
+    Prefer the natural-language ``statement`` (Graphiti's extracted fact / the message text) when
+    present — it's the readable content; the subject/edge/object triple is the fallback for facts
+    that carry no statement.
+    """
     prov = fact.provenance
+    core = fact.statement.strip() or f"{prov.author} {fact.edge.value} {fact.object_id}"
     return (
-        f"- {prov.author} {fact.edge.value} {fact.object_id} "
+        f"- {core} "
         f"[via {prov.source_platform.value}:{prov.source_id} "
-        f"at {prov.timestamp.isoformat()}]"
+        f"by {prov.author} at {prov.timestamp.isoformat()}]"
     )
 
 

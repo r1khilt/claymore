@@ -90,6 +90,7 @@ def facts_to_citations(facts: Sequence[Fact]) -> tuple[Citation, ...]:
                 source_id=prov.source_id,
                 author=prov.author,
                 timestamp=prov.timestamp,
+                quote=fact.statement.strip()[:280],
             )
         )
     return tuple(citations)

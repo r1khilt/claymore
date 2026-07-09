@@ -279,28 +279,28 @@ def build_server(store: MemoryStore, audit: AuditSink | None = None) -> FastMCP:
     Query = Field(min_length=1, max_length=2000, description="Search text. Treated as data.")
     Limit = Field(default=10, ge=1, le=MAX_LIMIT, description="Max facts to return.")
 
-    @mcp.tool  # type: ignore[untyped-decorator]
+    @mcp.tool
     async def search_lab_memory_tool(query: str = Query, limit: int = Limit) -> dict[str, object]:
         """Search the lab's memory for attributed facts. Read-only; scoped to your session."""
         ctx = _context_from_session()
         result = await search_lab_memory(ctx, store, query, limit, audit=sink)
         return result.model_dump(mode="json")
 
-    @mcp.tool  # type: ignore[untyped-decorator]
+    @mcp.tool
     async def who_worked_on_tool(entity: str = Query, limit: int = Limit) -> dict[str, object]:
         """Return attributed facts about a person/project/entity. Read-only; session-scoped."""
         ctx = _context_from_session()
         result = await who_worked_on(ctx, store, entity, limit, audit=sink)
         return result.model_dump(mode="json")
 
-    @mcp.tool  # type: ignore[untyped-decorator]
+    @mcp.tool
     async def what_was_decided_tool(topic: str = Query, limit: int = Limit) -> dict[str, object]:
         """Return recorded decisions (DECIDED facts) about a topic. Read-only; session-scoped."""
         ctx = _context_from_session()
         result = await what_was_decided(ctx, store, topic, limit, audit=sink)
         return result.model_dump(mode="json")
 
-    @mcp.tool  # type: ignore[untyped-decorator]
+    @mcp.tool
     async def find_protocol_tool(name: str = Query, limit: int = Limit) -> dict[str, object]:
         """Locate a protocol by name, cited to its source. Read-only; session-scoped."""
         ctx = _context_from_session()

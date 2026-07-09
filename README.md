@@ -11,11 +11,21 @@ ingest a lab's scattered memory → **ask** and get an *attributed* answer → *
 > [`SECURITY.md`](./SECURITY.md) / [`ENGINEERING_GUIDELINES.md`](./ENGINEERING_GUIDELINES.md)
 > before touching anything that ingests, acts, runs code, or holds a secret.
 
+## What works today (2026-07-09)
+
+The end-to-end ask path is **live**: Slack/Gmail/GitHub ingest through Composio into a
+Graphiti/FalkorDB temporal graph (identity-resolved, provenance-tagged, Haiku extraction),
+and a Telegram bot (@ClaymoreLabs_bot) answers questions like *"what did I commit this
+week?"* with cited, attributed facts — or an honest no-answer when the graph can't ground
+one. Write-backs, MCP-out, and proactive triggers are built and tested behind flags; the
+bio execute layer is next.
+
 ## Quickstart
 
 ```bash
 git clone https://github.com/r1khilt/claymore.git && cd claymore
-cp .env.example .env            # fill in Phase-0 keys: ANTHROPIC, VOYAGE, TELEGRAM
+cp .env.example .env            # ANTHROPIC + VOYAGE (real answers), TELEGRAM_* (bot),
+                                # COMPOSIO_* + ADMIN_API_TOKEN (ingest), LAB_ROSTER_JSON (identity)
 python -m venv .venv && source .venv/bin/activate
 make install                    # pip install -e ".[dev,...]"
 make up                         # falkordb + postgres + redis
@@ -23,17 +33,32 @@ make check                      # ruff + mypy --strict + pytest  (green = safe t
 make run                        # FastAPI on :8000  (GET /healthz)
 ```
 
+Wire the bot: expose :8000 (ngrok), set `PUBLIC_BASE_URL`, register the Telegram webhook
+with `setWebhook(url=.../webhooks/telegram, secret_token=$TELEGRAM_WEBHOOK_SECRET)`, and
+enroll users via `TELEGRAM_ENROLLMENTS=<telegram_id>:<lab>:<user>`. Then pull memory in:
+
+```bash
+curl -X POST localhost:8000/admin/ingest \
+  -H "X-Claymore-Admin-Token: $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"source":"github","days":7}'        # also: gmail, slack, notion
+```
+
+**Operational note:** the Graphiti provenance sidecar is in-process until the Postgres state
+layer lands — restarting the server after ingest empties retrieval. Boot once, ingest, demo;
+after a restart, flush the lab graph (`GRAPH.DELETE lab-<id>`) and re-ingest.
+
 ## Layout (see `CLAUDE.md §4`)
 
 ```
 src/claymore/
 ├── config.py        # env-driven settings + feature flags
 ├── ports.py         # the 7 vendor-swap interfaces (hexagonal seams)
+├── api/             # FastAPI: webhooks (Telegram/WhatsApp), admin ingest, runtime wiring
 ├── ingest/          # [Pipes]  sources -> Episode -> durable log
 ├── memory/          # [Brain]  Graphiti graph, identity, reconcile, retrieval
 ├── agent/           # [Brain]  Claude tool-loop, conversation, temporal
 ├── actions/         # [Pipes]  Composio write-backs behind the approval gate
-├── messaging/       # [Pipes]  Telegram (dev) / Twilio SMS (prod)
+├── messaging/       # [Pipes]  Telegram (live) / WhatsApp via Twilio (paid-Twilio labs)
 ├── mcp_server/      # [Brain]  expose lab memory over MCP
 ├── proactive/       # briefs, never-tested-idea nudges, digests
 ├── execute/         # [Brain]  science agent, compute, wet-lab (later, gated)

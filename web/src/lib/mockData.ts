@@ -174,7 +174,7 @@ export const feeds: SourceFeed[] = [
 
 /* --------------------------------------------------------------- answers -- */
 
-const CIT = {
+export const CIT = {
   lucasSlack: {
     sourcePlatform: 'slack' as const,
     sourceId: 'protein-eng/1718900000.041',

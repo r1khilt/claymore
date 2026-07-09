@@ -6,11 +6,29 @@ tests exercise it with realistic, provenance-tagged data and nothing live.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
+from typing import Any
+from unittest import mock
 
 from claymore.auth.models import Role, User
+from claymore.config import Settings
 from claymore.domain import SourcePlatform, Visibility
 from claymore.ingest.normalize import Episode
+
+
+def make_settings(**overrides: Any) -> Settings:
+    """Hermetic ``Settings`` for tests: only the given overrides, nothing ambient.
+
+    ``Settings(_env_file=None)`` still reads ``os.environ`` — and ``graphiti_core`` calls
+    ``load_dotenv()`` at import time, dumping the developer's real ``.env`` (keys, URLs) into
+    the process env mid-run. That made tests order-dependent: any test importing graphiti
+    silently changed every later Settings-based test. Constructing under a cleared env makes
+    each test's config exactly what it states.
+    """
+    with mock.patch.dict(os.environ, {}, clear=True):
+        return Settings(_env_file=None, **overrides)
+
 
 LAB = "lab1"
 NOW = datetime(2026, 3, 3, 12, 0, tzinfo=UTC)

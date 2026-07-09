@@ -471,9 +471,7 @@ async def run_agent(
 
         # Record the assistant turn (with its tool_use blocks) before the tool results. The SDK
         # sanctions echoing response content back as input params; cast bridges response->param.
-        messages.append(
-            cast("MessageParam", {"role": "assistant", "content": message.content})
-        )
+        messages.append(cast("MessageParam", {"role": "assistant", "content": message.content}))
 
         tool_results: list[ToolResultBlockParam] = []
         for use in tool_uses:

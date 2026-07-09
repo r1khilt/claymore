@@ -39,8 +39,18 @@ class Settings(BaseSettings):
 
     # --- ingestion (Phase 1) ---
     composio_api_key: SecretStr = SecretStr("")
+    composio_user_id: str = ""
+    """Composio entity id the lab's connected accounts live under (one per connected user)."""
     granola_api_key: SecretStr = SecretStr("")
     codelogs_paths: tuple[str, ...] = ()
+    lab_roster_json: str = ""
+    """Demo roster until the Postgres state layer lands: JSON list of ``auth.models.User``
+    objects (id, lab_id, person_id, platform_handles) seeding identity resolution (R11)."""
+
+    # --- admin API (ingest triggers) ---
+    admin_api_token: SecretStr = SecretStr("")
+    """Bearer for ``/admin/*``. Empty ⇒ every admin request is rejected (fail-closed) — the
+    API may be exposed through a public tunnel, so these routes are never open."""
 
     # --- messaging (Phase 2) ---
     twilio_account_sid: SecretStr = SecretStr("")

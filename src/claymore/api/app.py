@@ -12,9 +12,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from claymore import __version__
+from claymore import __version__, agent
+from claymore.api.routes.admin import router as admin_router
 from claymore.api.routes.telegram import router as telegram_router
 from claymore.api.routes.whatsapp import router as whatsapp_router
+from claymore.api.runtime import build_runtime
 from claymore.config import get_settings
 from claymore.logging import configure_logging, get_logger
 
@@ -25,6 +27,9 @@ _log = get_logger("api")
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
+    runtime = build_runtime(settings)
+    if runtime is not None:
+        agent.set_runtime(runtime)  # real graph + real LLM behind the Ask loop
     if settings.whatsapp_enrollments:
         from claymore.api.routes.whatsapp import directory_from_enrollments, set_directory
 
@@ -44,6 +49,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Claymore", version=__version__, lifespan=lifespan)
 app.include_router(whatsapp_router)
 app.include_router(telegram_router)
+app.include_router(admin_router)
 
 
 @app.get("/healthz")

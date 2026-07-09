@@ -15,6 +15,8 @@ import {
 import { Background } from '@/components/Background'
 import { Sidebar } from '@/components/Sidebar'
 import { AskView, type PersistTurn } from '@/components/ask/AskView'
+import { RunChatLanding } from '@/components/run/RunChatLanding'
+import { RunView } from '@/components/run/RunView'
 import { SourceRail } from '@/components/sources/SourceRail'
 import { ProtocolWorkspace } from '@/components/bench/ProtocolWorkspace'
 import { MemoryView } from '@/components/views/MemoryView'
@@ -31,8 +33,17 @@ const DEFAULT_PROFILE: Profile = {
   avatarDataUrl: null,
 }
 
+/** Within the Ask area, which of the two entry modes is showing. `landing` is the
+ *  start screen (Run · Chat); the sidebar and source rail are identical across all
+ *  three — only this middle section swaps. */
+type AskMode = 'landing' | 'chat' | 'run'
+
 export default function App() {
   const [view, setView] = useState<View>('ask')
+  const [askMode, setAskMode] = useState<AskMode>('landing')
+  // RunView mounts once the user first enters Run, then stays mounted (hidden) so an
+  // in-flight autopilot survives navigation — same rule as the Composer below.
+  const [hasEnteredRun, setHasEnteredRun] = useState(false)
   const [protocol, setProtocol] = useState<Protocol>(defaultProtocol())
   const [local, setLocal] = useState<LocalState | null>(null)
   // The chat the Composer is bound to. `activeChatId` is always set so a completed turn has an id
@@ -60,12 +71,26 @@ export default function App() {
     const chat = await getChat(id)
     setLoadedTurns(chat?.turns ?? [])
     setActiveChatId(id)
+    setAskMode('chat')
     setView('ask')
   }
 
   function newChat() {
     setLoadedTurns(undefined)
     setActiveChatId(newChatId())
+    setAskMode('chat')
+    setView('ask')
+  }
+
+  function chooseRun() {
+    setHasEnteredRun(true)
+    setAskMode('run')
+    setView('ask')
+  }
+
+  /** Back to the Run · Chat chooser (sidebar brand + Run's Back button). */
+  function goHome() {
+    setAskMode('landing')
     setView('ask')
   }
 
@@ -105,10 +130,11 @@ export default function App() {
       <Sidebar
         view={view}
         onNavigate={setView}
+        onHome={goHome}
         badges={{ approvals: 2, proactive: 3 }}
         profile={profile}
         chats={local?.chats ?? []}
-        activeChatId={activeChatId}
+        activeChatId={askMode === 'chat' ? activeChatId : null}
         onOpenChat={openChat}
         onNewChat={newChat}
       />
@@ -124,16 +150,30 @@ export default function App() {
             </div>
           )}
 
-          {/* Composer stays mounted so the conversation (and any in-flight run) survives nav.
-              Keyed by the active chat so opening a different one restores its turns. */}
+          {/* Ask area — stays mounted so an in-flight Chat or Run survives nav. Only this
+              middle section swaps between the landing chooser, the Composer, and autopilot;
+              the sidebar and source rail are identical across all three. */}
           <div className={cn('h-full', view !== 'ask' && 'hidden')}>
-            <AskView
-              key={activeChatId}
-              onOpenProtocol={openProtocol}
-              initialTurns={loadedTurns}
-              onPersist={persistChat}
-              onNewChat={newChat}
-            />
+            <div className={cn('h-full', askMode !== 'landing' && 'hidden')}>
+              <RunChatLanding onRun={chooseRun} onChat={newChat} />
+            </div>
+
+            {/* Composer, keyed by the active chat so opening a different one restores its turns. */}
+            <div className={cn('h-full', askMode !== 'chat' && 'hidden')}>
+              <AskView
+                key={activeChatId}
+                onOpenProtocol={openProtocol}
+                initialTurns={loadedTurns}
+                onPersist={persistChat}
+                onNewChat={newChat}
+              />
+            </div>
+
+            {hasEnteredRun && (
+              <div className={cn('h-full', askMode !== 'run' && 'hidden')}>
+                <RunView onOpenProtocol={openProtocol} onBack={goHome} />
+              </div>
+            )}
           </div>
 
           {view !== 'ask' && (

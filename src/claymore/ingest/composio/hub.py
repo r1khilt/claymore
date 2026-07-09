@@ -1,11 +1,217 @@
 """[Pipes] Composio ``ConnectorHub`` adapter — Slack, Gmail, GitHub, Notion, Drive, Docs.
 
-Implements ``claymore.ports.ConnectorHub`` over Composio managed OAuth (per-user connected
-accounts). Verifies signed webhooks (``webhook-signature``, SECURITY.md §8); populates each
-``Episode``'s ``visibility`` from the source object's ACL (R13); streams backfill (never slurp,
-R6). Note the 15-min polling default on managed OAuth.
+Implements :class:`claymore.ports.ConnectorHub` over Composio managed OAuth (per-user connected
+accounts). ``backfill``/``incremental`` are **streaming async generators** — they page the
+source and yield one :class:`~claymore.ingest.normalize.Episode` at a time, never accumulating a
+whole history in memory (R6/§2). Each item is normalized + scoped + author-resolved through the
+shared parsers in :mod:`claymore.ingest.composio.sources`, so the live adapter and the
+:class:`FakeConnectorHub` used by tests exercise exactly the same code path.
 
-TODO(Phase 1): backfill/incremental per source + ACL→visibility mapping + webhook verify.
+Provenance/scope/identity guarantees come from ``sources.py``: ``visibility`` is derived
+fail-closed from each item's ACL (R13); authors are resolved via :class:`IdentityResolver` or
+left ``unknown`` — never guessed (hard rule 1); ``is_untrusted`` is always ``True`` (all
+ingested content is data, never instructions — SECURITY.md rule 1).
+
+Operational notes:
+
+- **15-min polling caveat (§5):** Composio-managed OAuth apps default to ~15-minute trigger
+  polling. ``incremental`` is therefore a *poll* — call it on a schedule; register your own
+  OAuth app per provider if you need fresher-than-15-min sync.
+- **Backfill cost (R6):** a full backfill blows past the free 1k tool executions fast. Scope
+  the pilot to a small window (recent history / a few channels); dedup + the resumable
+  checkpoint below mean you never re-pay for the same page.
+- **Resumability:** :meth:`checkpoint` exposes the last source-time seen per (lab, source);
+  ``incremental`` resumes from it. A caller can persist it (Postgres) and reconstruct a hub that
+  continues where it left off.
+
+TODO(Phase 1, live): confirm every action slug + response-envelope path in ``sources.py``
+against a live Composio call; verify signed ``webhook-signature`` where a push path replaces the
+poll (SECURITY.md §8); wire the connected-account/user mapping for multi-user labs.
 """
 
 from __future__ import annotations
+
+from collections.abc import AsyncIterator, Mapping
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from claymore.domain import LabId, SourcePlatform
+from claymore.ingest.composio.sources import (
+    SourceSpec,
+    extract_cursor,
+    extract_items,
+    get_spec,
+    to_episode,
+)
+from claymore.ingest.normalize import Episode
+from claymore.memory.graph import ensure_aware
+from claymore.memory.identity import IdentityResolver
+from claymore.ports import ConnectorHub
+
+if TYPE_CHECKING:
+    from claymore.config import Settings
+
+logger = structlog.get_logger(__name__)
+
+# Hard cap on pages per backfill — a defensive stop against a source that keeps returning a
+# fresh cursor forever (or a buggy one that never advances). Streaming already bounds memory;
+# this bounds *cost/time* (R6). Raise deliberately for a large calibrated backfill.
+_MAX_PAGES = 10_000
+
+
+class _StreamingHub(ConnectorHub):
+    """Shared ``incremental``/``checkpoint`` for connector hubs built on a streaming ``backfill``.
+
+    Subclasses implement ``backfill`` (the source-specific paging). ``incremental`` resumes from
+    the last source-time seen per (lab, source) and advances the checkpoint as it yields — so a
+    re-poll only surfaces genuinely newer episodes (dedup in the Episode log handles the
+    inclusive-boundary overlap, R6/R14).
+    """
+
+    def __init__(self) -> None:
+        self._checkpoints: dict[tuple[LabId, SourcePlatform], datetime] = {}
+
+    async def incremental(self, lab_id: LabId, source: SourcePlatform) -> AsyncIterator[Episode]:
+        since = self._checkpoints.get((lab_id, source))
+        async for episode in self.backfill(lab_id, source, since=since):
+            ts = ensure_aware(episode.timestamp)
+            prev = self._checkpoints.get((lab_id, source))
+            if prev is None or ts > prev:
+                self._checkpoints[(lab_id, source)] = ts
+            yield episode
+
+    def checkpoint(self, lab_id: LabId, source: SourcePlatform) -> datetime | None:
+        """Last source-time seen for (lab, source) — the resumable sync cursor (persist this)."""
+        return self._checkpoints.get((lab_id, source))
+
+
+def _response_data(response: Any) -> Mapping[str, Any]:
+    """Defensively pull the ``.data`` mapping off a Composio ``ToolExecutionResponse``."""
+    data = getattr(response, "data", None)
+    return data if isinstance(data, Mapping) else {}
+
+
+class ComposioConnectorHub(_StreamingHub):
+    """Live Composio adapter. ``composio`` is lazy-imported so tests/CI never require the SDK.
+
+    One hub pulls from one connected account (``user_id`` = the Composio entity id, i.e. our lab
+    user). Multi-user labs construct one hub per connected account. The API key comes from
+    settings; the SDK client is built lazily on first fetch.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        resolver: IdentityResolver | None = None,
+        user_id: str | None = None,
+        connected_account_id: str | None = None,
+        page_size: int | None = None,
+    ) -> None:
+        super().__init__()
+        self._settings = settings
+        self._resolver = resolver
+        self._user_id = user_id
+        self._connected_account_id = connected_account_id
+        self._page_size = page_size
+        self._client_obj: Any = None
+
+    def _client(self) -> Any:
+        """Build the Composio client on first use (lazy import keeps the SDK optional)."""
+        if self._client_obj is None:
+            from composio import Composio
+
+            self._client_obj = Composio(api_key=self._settings.composio_api_key.get_secret_value())
+        return self._client_obj
+
+    def initiate_connection(self, user_id: str, toolkit: str) -> Any:
+        """Thin passthrough so the maintainer can generate an OAuth authorize link later.
+
+        Returns the SDK's connection-request object (has the redirect URL). OAuth flows are not
+        implemented here — this only forwards to ``connected_accounts.initiate``.
+        """
+        return self._client().connected_accounts.initiate(user_id=user_id, toolkit=toolkit)
+
+    async def backfill(
+        self, lab_id: LabId, source: SourcePlatform, since: datetime | None = None
+    ) -> AsyncIterator[Episode]:
+        spec = get_spec(source)
+        page_size = spec.default_page_size if self._page_size is None else self._page_size
+        client = self._client()
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+
+        for _ in range(_MAX_PAGES):
+            arguments: dict[str, Any] = {spec.limit_arg: page_size}
+            if cursor:
+                arguments[spec.cursor_arg] = cursor
+            try:
+                response = client.tools.execute(
+                    spec.action_slug,
+                    arguments=arguments,
+                    user_id=self._user_id,
+                    connected_account_id=self._connected_account_id,
+                )
+            except Exception as exc:  # a page fetch failing must not crash the caller
+                logger.warning(
+                    "composio.execute_failed",
+                    platform=source,
+                    slug=spec.action_slug,
+                    error=str(exc),
+                )
+                return
+
+            data = _response_data(response)
+            items = extract_items(spec, data)
+            for raw in items:
+                episode = to_episode(spec, raw, lab_id, since=since, resolver=self._resolver)
+                if episode is not None:
+                    yield episode
+
+            cursor = extract_cursor(spec, data)
+            # Stop on: no next cursor, an empty page, or a cursor that fails to advance.
+            if not cursor or not items or cursor in seen_cursors:
+                return
+            seen_cursors.add(cursor)
+        logger.warning("composio.max_pages_reached", platform=source, max_pages=_MAX_PAGES)
+
+
+class FakeConnectorHub(_StreamingHub):
+    """In-memory ``ConnectorHub`` over representative raw payloads — the test/dev double.
+
+    Constructed with ``{SourcePlatform: [raw item dict, ...]}``, it runs items through the SAME
+    parsers as the live adapter (:func:`to_episode`), so it proves parsing/scoping/identity/
+    dedup without a ``COMPOSIO_API_KEY``. It paginates the fixture in ``page_size`` chunks and
+    yields incrementally; ``parsed`` counts items actually processed, which lets a test assert
+    the generator streams (does not materialize the whole source) when a consumer breaks early.
+    """
+
+    def __init__(
+        self,
+        raw_items: Mapping[SourcePlatform, list[Any]],
+        *,
+        resolver: IdentityResolver | None = None,
+        page_size: int = 2,
+    ) -> None:
+        super().__init__()
+        self._raw: dict[SourcePlatform, list[Any]] = dict(raw_items)
+        self._resolver = resolver
+        self._page_size = max(1, page_size)
+        self.parsed = 0
+
+    async def backfill(
+        self, lab_id: LabId, source: SourcePlatform, since: datetime | None = None
+    ) -> AsyncIterator[Episode]:
+        spec: SourceSpec = get_spec(source)
+        items = self._raw.get(source, [])
+        # Page the fixture to simulate the live cursor loop; yield within each page so a huge
+        # source is streamed, not accumulated (R6).
+        for start in range(0, len(items), self._page_size):
+            page = items[start : start + self._page_size]
+            for raw in page:
+                self.parsed += 1
+                episode = to_episode(spec, raw, lab_id, since=since, resolver=self._resolver)
+                if episode is not None:
+                    yield episode

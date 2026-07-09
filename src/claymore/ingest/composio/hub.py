@@ -88,8 +88,17 @@ class _StreamingHub(ConnectorHub):
 
 
 def _response_data(response: Any) -> Mapping[str, Any]:
-    """Defensively pull the ``.data`` mapping off a Composio ``ToolExecutionResponse``."""
-    data = getattr(response, "data", None)
+    """Defensively pull the ``data`` mapping off a Composio tool-execution response.
+
+    Calibrated against a live call: the SDK returns a plain ``dict``
+    (``{"data": {...}, "error": ..., "successful": ...}``), not an object with a ``.data``
+    attribute — so try mapping-key access first, then fall back to attribute access for
+    forward-compat with a typed response object.
+    """
+    if isinstance(response, Mapping):
+        data = response.get("data")
+    else:
+        data = getattr(response, "data", None)
     return data if isinstance(data, Mapping) else {}
 
 
@@ -153,6 +162,10 @@ class ComposioConnectorHub(_StreamingHub):
                     arguments=arguments,
                     user_id=self._user_id,
                     connected_account_id=self._connected_account_id,
+                    # Manual execution requires a pinned toolkit version; "latest" is rejected.
+                    # We skip the check to always run the newest tool (fine for the pilot; a
+                    # prod deploy should pin COMPOSIO_TOOLKIT_VERSION_* for reproducibility).
+                    dangerously_skip_version_check=True,
                 )
             except Exception as exc:  # a page fetch failing must not crash the caller
                 logger.warning(

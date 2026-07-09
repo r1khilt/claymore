@@ -20,7 +20,7 @@ from collections.abc import Sequence
 import structlog
 
 from claymore.auth.models import User
-from claymore.domain import UNKNOWN_AUTHOR, LabId, PersonId, SourcePlatform
+from claymore.domain import UNKNOWN_AUTHOR, LabId, PersonId, SourcePlatform, UserId
 from claymore.ingest.normalize import Episode
 
 logger = structlog.get_logger(__name__)
@@ -63,6 +63,10 @@ class IdentityResolver:
         )
         # (platform, normalized handle) → PersonId | _AMBIGUOUS
         self._index: dict[tuple[SourcePlatform, str], object] = {}
+        # (platform, normalized handle) → UserId | _AMBIGUOUS. Parallel to _index but keyed to
+        # the *account* id, because visibility (R13) is enforced against ``User.id`` — a Gmail/
+        # Slack participant handle must resolve to a UserId to land in ``allowed_user_ids``.
+        self._user_index: dict[tuple[SourcePlatform, str], object] = {}
         for user in roster:
             if user.lab_id != lab_id:
                 # Fail closed: a roster row from another lab must never seed this resolver
@@ -78,9 +82,11 @@ class IdentityResolver:
                 existing = self._index.get(key)
                 if existing is not None and existing != user.person_id:
                     self._index[key] = _AMBIGUOUS
+                    self._user_index[key] = _AMBIGUOUS
                     logger.warning("identity.ambiguous_handle", platform=platform, lab_id=lab_id)
                 else:
                     self._index[key] = user.person_id
+                    self._user_index[key] = user.id
 
     def is_canonical(self, person_id: PersonId) -> bool:
         """Whether ``person_id`` is a known lab person (i.e. already resolved)."""
@@ -96,6 +102,33 @@ class IdentityResolver:
             return UNKNOWN_AUTHOR
         assert isinstance(hit, str)  # narrowed: index stores PersonId | _AMBIGUOUS
         return hit
+
+    def resolve_user(self, platform: SourcePlatform, raw_handle: str) -> UserId | None:
+        """Resolve one platform handle → canonical ``UserId``, or ``None`` if not a lab member.
+
+        Used to turn a source object's participant handles (Gmail recipients, Slack DM members)
+        into the ``allowed_user_ids`` that visibility (R13) is checked against. A handle that
+        isn't a seeded lab member (an external sender, an ambiguous handle) → ``None`` and is
+        dropped — never guessed into the allowlist.
+        """
+        normalized = normalize_handle(raw_handle)
+        if not normalized:
+            return None
+        hit = self._user_index.get((platform, normalized))
+        if hit is None or hit is _AMBIGUOUS:
+            return None
+        assert isinstance(hit, str)
+        return hit
+
+    def resolve_users(
+        self, platform: SourcePlatform, raw_handles: Sequence[str]
+    ) -> frozenset[UserId]:
+        """Resolve a set of participant handles to the lab ``UserId``s among them (others drop)."""
+        return frozenset(
+            uid
+            for handle in raw_handles
+            if (uid := self.resolve_user(platform, handle)) is not None
+        )
 
     def resolve_speaker(self, label: str, attendees: Sequence[str]) -> PersonId:
         """Map a Granola speaker label to a meeting attendee — the weakest source (R11).

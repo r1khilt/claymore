@@ -516,4 +516,25 @@ def to_episode(
         return None
     if resolver is not None:
         episode = resolver.resolve_episode(episode)
+        episode = _resolve_visibility_participants(episode, spec.platform, resolver)
     return episode
+
+
+def _resolve_visibility_participants(
+    episode: Episode, platform: SourcePlatform, resolver: IdentityResolver
+) -> Episode:
+    """Remap a restricted episode's ``allowed_user_ids`` from raw handles to canonical UserIds.
+
+    Parsers populate ``allowed_user_ids`` with normalized *participant handles* (Gmail
+    recipients, Slack DM members), but visibility (R13) is checked against ``User.id``. Without
+    this pass a private episode is invisible to *everyone* — including the lab member who owns
+    it — because a handle never equals a UserId (fail-closed, but over-restrictive). Here each
+    handle resolves to the lab UserId behind it; external participants (no roster match) drop.
+    ``lab_wide`` episodes carry no allowlist and pass through untouched.
+    """
+    vis = episode.visibility
+    if vis.lab_wide or not vis.allowed_user_ids:
+        return episode
+    resolved = resolver.resolve_users(platform, tuple(vis.allowed_user_ids))
+    new_vis = Visibility(lab_wide=False, allowed_user_ids=resolved, source_label=vis.source_label)
+    return episode.model_copy(update={"visibility": new_vis})

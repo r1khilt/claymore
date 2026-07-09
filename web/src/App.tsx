@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { View } from '@/lib/types'
 import { isLive } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { defaultProtocol, type Protocol } from '@/lib/protocol'
 import { Background } from '@/components/Background'
 import { Sidebar } from '@/components/Sidebar'
@@ -23,10 +24,8 @@ export default function App() {
     setView('bench')
   }
 
-  function renderView() {
+  function renderOther() {
     switch (view) {
-      case 'ask':
-        return <AskView onOpenProtocol={openProtocol} />
       case 'bench':
         return <ProtocolWorkspace protocol={protocol} />
       case 'memory':
@@ -37,6 +36,8 @@ export default function App() {
         return <ConnectorsView />
       case 'proactive':
         return <ProactiveView />
+      default:
+        return null
     }
   }
 
@@ -51,23 +52,30 @@ export default function App() {
             <div className="pointer-events-none absolute right-5 top-5 z-10">
               <span className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/50 px-2.5 py-1 text-[11.5px] font-medium text-muted backdrop-blur">
                 <span className={`size-1.5 rounded-full ${isLive ? 'bg-sage-500' : 'bg-amber-400'}`} />
-                {isLive ? 'Live · /api/ask' : 'Demo data'}
+                {isLive ? 'Live · agent' : 'Demo data'}
               </span>
             </div>
           )}
 
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={view}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.18 }}
-              className="h-full"
-            >
-              {renderView()}
-            </motion.div>
-          </AnimatePresence>
+          {/* Composer stays mounted so the conversation (and any in-flight run) survives nav. */}
+          <div className={cn('h-full', view !== 'ask' && 'hidden')}>
+            <AskView onOpenProtocol={openProtocol} />
+          </div>
+
+          {view !== 'ask' && (
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={view}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.18 }}
+                className="h-full"
+              >
+                {renderOther()}
+              </motion.div>
+            </AnimatePresence>
+          )}
         </main>
 
         {showRail && <SourceRail />}

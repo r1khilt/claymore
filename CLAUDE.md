@@ -77,7 +77,10 @@ claymore/
 ├── .env.example
 ├── src/claymore/
 │   ├── config.py
-│   ├── api/                   # FastAPI: webhooks, sms inbound, dashboard
+│   ├── local_store.py         # single-user on-disk store for the web dashboard (chats/settings/
+│   │                          #   profile/API-keys/metrics/error-log) — JSON in ~/.claymore/, git-ignored,
+│   │                          #   NOT the Postgres app-state store; local dev/demo convenience only
+│   ├── api/                   # FastAPI: webhooks, sms inbound, dashboard (+ /api/local/* store routes)
 │   ├── ingest/
 │   │   ├── composio/          # Slack, Gmail, GitHub, Notion, Drive, Docs
 │   │   ├── granola.py         # public-api.granola.ai/v1
@@ -164,6 +167,6 @@ See `BUILD_PLAN.md` for the full milestone breakdown, risk register, and open de
 - Ship the thinnest vertical slice that a real lab member can use. Prefer one working end-to-end path over five half-built connectors.
 - Build the **eval harness (`evals/`) in Phase 1**, not later. The killer failure is confident wrong attribution; measure it (LongMemEval-style: temporal, multi-hop, knowledge-update queries against a seeded lab corpus).
 - Surface disconfirming evidence in PRs/plans — if a chosen approach is failing on evals or cost, say so early.
-- Keep secrets in `.env` / a vault, never in the graph or logs.
+- Keep secrets in `.env` / a vault, never in the graph or logs. **Exception (scoped):** the web dashboard's local store (`local_store.py`, `~/.claymore/local.json`) may hold the user's own Anthropic/Voyage key entered in Settings — it's a single-user local file (git-ignored), the key is never logged and only builds the live Composer's client server-side. This is a local dev/demo convenience; a real deployment still uses `.env`/a vault.
 - Every new source connector must pass: backfill → incremental sync → correct provenance on a spot-checked episode, before it's "done."
 - **Adversarial stress-testing is mandatory, per component, as it's built — not a hardening phase later.** Every component PR ships `tests/adversarial/test_<component>.py` that actively tries to break it: empty/huge/malformed/unicode-garbage input, injection-shaped content in untrusted fields (episode text that "gives instructions"), duplicate + out-of-order + replayed events (idempotency), temporal boundary cases (valid_from == valid_to, future timestamps, timezone edges), visibility-scope leakage attempts (query as user who shouldn't see the fact), and concurrent writes where applicable. A component without its adversarial suite is not done (`ENGINEERING_GUIDELINES.md §5`). When a stress test finds a real break, fix the root cause and keep the test — never delete or weaken a red adversarial test to ship.

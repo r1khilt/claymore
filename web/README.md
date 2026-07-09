@@ -21,11 +21,23 @@ it looks alive with zero backend.
 
 | Zone | What it is |
 |---|---|
-| **Left rail** | Quiet nav — Ask · Memory · Approvals · Connectors · Proactive |
-| **Composer** | The main chat is an agent. It streams a **thought + tool-call trace** (search memory → decide → ingest / analyze / generate a run) and returns cited answers, **bio-analysis** metric cards, or a generated Opentrons scene. Refuses anything Opentrons can't do (see the hardware catalog). |
+| **Left rail** | Quiet nav — Ask · Memory · Approvals · Connectors · Proactive — plus a **Recent chats** list and a **profile notch** at the bottom that opens **Settings** |
+| **Composer** | The main chat is an agent. It streams a **thought + tool-call trace** (search memory → decide → ingest / analyze / generate a run) and returns cited answers, **bio-analysis** metric cards, or a generated Opentrons scene. Refuses anything Opentrons can't do (see the hardware catalog). Every conversation is **saved locally** and restorable from Recent. |
 | **Bench** | An Opentrons workspace that renders **any** generated protocol dynamically: an animated **2D deck** (moving pipette, filling wells, modules like thermocycler / heater-shaker / magnetic) with a **2D / 3D toggle** (react-three-fiber), the generated **Python Protocol API**, a live run log, and a human-gated physical run |
 | **Right rail** | Recreated **Slack · iMessage · Notion · Gmail · GitHub** feeds showing the key messages the agent reasons on, each with an *in-memory* cue |
+| **Settings** | Local, single-user config: **profile** (name / lab / avatar upload / accent), **API keys** (Anthropic + Voyage, used to run the live Composer), **reasoning level** + live/debug toggles, **usage & metrics** (real token counts + per-tool call counts recorded from live runs), an **error log**, and a **Data** panel (where the file lives, export JSON, clear). |
 | **Memory / Approvals / Connectors / Proactive** | Full mocked views for the rest of the product surface |
+
+## Local store — "keep it all local"
+
+Recent chats, Settings, profile, usage metrics and the error log persist to a **single JSON file in
+your own folder** — `~/.claymore/local.json` (override with `CLAYMORE_LOCAL_DIR`), git-ignored, never
+pushed. It is written by the backend `src/claymore/local_store.py` behind the ungated `/api/local/*`
+routes; the browser client is `src/lib/local.ts`, which **falls back to `localStorage`** when no
+backend is running so the mock demo still remembers everything across refreshes. Token/tool-call
+**metrics are real** — recorded server-side when a live agent run finishes — so they read as zero
+until you actually run the Composer live. This is a local dev/demo convenience, **not** the Postgres
+app-state store, and holds no multi-tenant scoping — one user, one machine.
 
 ## Mock vs. live
 
@@ -36,9 +48,13 @@ it looks alive with zero backend.
   shapes. Robot scenes come from `generateScene()` (`src/lib/protocol.ts`), validated against the
   supported-hardware catalog in `src/lib/hardware.ts`.
 - **Live:** the backend exposes a streaming **`POST /api/agent`** (SSE) running the real Claude
-  tool-loop (`src/claymore/agent/agent_loop.py`), plus the single-shot `POST /api/ask`. Enable
-  with `WEB_API_ENABLED=true` + an `ANTHROPIC_API_KEY`. Point the client at it by switching the
-  event source in `AskView` from `runAgent` to the SSE stream (same event contract).
+  tool-loop (`src/claymore/agent/agent_loop.py`), plus the single-shot `POST /api/ask`. The client
+  is already wired: `AskView` calls `agentStream()` (`src/lib/agent.ts`), which reads the live SSE
+  when `VITE_CLAYMORE_LIVE=1` and the mock otherwise — same event contract either way. Enable with
+  `WEB_API_ENABLED=true` and an Anthropic key from **either** `ANTHROPIC_API_KEY` **or** the one you
+  paste into **Settings → API keys** (stored in the local file, never logged). The live loop honors
+  the Settings **reasoning level** (loop/token budget) and, on finish, records this turn's real
+  token usage + tool-call counts into the local metrics store.
 
 ## Stack
 
@@ -50,7 +66,8 @@ shadcn-style primitives. Path alias `@/*` → `src/*`.
 src/
 ├── App.tsx                 # shell: background + sidebar + view + source rail
 ├── lib/{types,api,mockData,sources,utils}.ts
-├── lib/agent.ts            # mock agent engine (event stream = /api/agent contract)
+├── lib/local.ts            # local store client (/api/local/* + localStorage fallback): chats, settings, metrics
+├── lib/agent.ts            # mock agent engine + live SSE reader; agentStream() picks by VITE_CLAYMORE_LIVE
 ├── lib/hardware.ts         # Opentrons supported-hardware catalog (pipettes/labware/modules)
 ├── lib/protocol.ts         # deck model + geometry + generateScene() (catalog-validated)
 ├── components/
@@ -59,7 +76,7 @@ src/
 │   ├── ask/                 # AskView (Composer), AgentTurn (trace), AskBox, AnswerView, ProtocolCard…
 │   ├── bench/              # Opentrons: Deck2D, Deck3D (r3f), useRunPlayer, RunLog, CodePanel
 │   ├── sources/            # SourceRail + per-platform SourcePanel
-│   └── views/              # Memory, Approvals, Connectors, Proactive
+│   └── views/              # Memory, Approvals, Connectors, Proactive, Settings
 └── components/brand/logos.tsx  # inline Slack/Gmail/GitHub/Notion/iMessage marks
 ```
 

@@ -107,6 +107,7 @@ A prompt injection that reaches physical hardware is a safety incident. See `RIS
 - **Composio holds the third-party OAuth tokens** server-side (SOC2/ISO27001) — Claymore stores only a Composio API key + per-user connection references, shrinking blast radius. Narrow scopes, prefer read-only, prefer short-lived tokens.
 - **OIDC (not static creds) in CI** — GitHub Actions → short-lived cloud token; no long-lived secret in the pipeline. (CI runners are a top breach vector in 2026.)
 - The LLM, tool descriptions, tool outputs, and the graph never contain a secret.
+- **Local web-dashboard store (dev/demo only).** The single-user store (`local_store.py`, `~/.claymore/local.json`, git-ignored) may hold the user's own Anthropic/Voyage key pasted into Settings. It never enters the model context — it only constructs the live Composer's Anthropic client server-side — and is never logged. The `/api/local/*` routes are ungated (they touch only the user's own file, hold no lab IP, run no model) and are localhost dev/demo convenience; a real deployment keeps keys in the secrets manager above, not this file.
 
 ---
 

@@ -117,11 +117,17 @@ export function AgentTurn({
   onOpenProtocol: (p: Protocol) => void
 }) {
   const hasResult = events.some((e) => e.type === 'answer' || e.type === 'protocol' || e.type === 'analysis')
+  // The live agent surfaces its final prose as both a `thought` and the `answer`;
+  // don't render the thought twice.
+  const answerTexts = new Set(
+    events.flatMap((e) => (e.type === 'answer' ? [e.text.trim()] : [])),
+  )
   return (
     <div className="flex flex-col gap-2.5">
       {events.map((e, i) => {
         switch (e.type) {
           case 'thought':
+            if (answerTexts.has(e.text.trim())) return null
             return <Thought key={i} text={e.text} />
           case 'toolStart': {
             const end = findEnd(events, e.id)

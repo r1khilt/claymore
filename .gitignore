@@ -9,6 +9,13 @@
 # but it maps our accounts/tiers/infra). Remove this line if you decide to share it.
 CREDENTIALS.md
 
+# Local single-user web store — the dashboard's chats/settings/profile/API-keys/metrics/error-log
+# (src/claymore/local_store.py). Defaults to ~/.claymore/ (outside the repo); these patterns cover
+# a repo-relative CLAYMORE_LOCAL_DIR too. Holds real keys + lab chat history — never commit.
+.claymore/
+.claymore-local/
+*.local.json
+
 # --- Python ---
 __pycache__/
 *.py[cod]

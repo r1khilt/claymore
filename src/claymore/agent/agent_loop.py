@@ -224,6 +224,13 @@ class AnalysisEvent(_CamelModel):
 
 class DoneEvent(_CamelModel):
     type: Literal["done"] = "done"
+    # Real usage for this turn — token counts from the model's ``usage`` and how many tool calls
+    # ran. The SSE route folds these into the local metrics store; the UI shows them per-run.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tool_calls: int = 0
+    iterations: int = 0
+    tool_counts: dict[str, int] = {}
 
 
 class ErrorEvent(_CamelModel):
@@ -398,18 +405,31 @@ class _ToolOutcome(BaseModel):
 
 
 async def run_agent(
-    ctx: RequestContext, query: str, store: MemoryStore, settings: Settings
+    ctx: RequestContext,
+    query: str,
+    store: MemoryStore,
+    settings: Settings,
+    *,
+    max_iterations: int | None = None,
+    max_tokens: int | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the bounded Claude tool loop for one Composer query, yielding events as it goes.
 
     Grounding, the untrusted-data posture, and the propose-don't-execute rule are enforced here
     and stated to the model. The caller (the SSE endpoint) is responsible for gating on the key —
     this reaches the SDK, so it must only be invoked when ``settings.anthropic_api_key`` is set.
+
+    ``max_iterations`` / ``max_tokens`` let the caller override the loop budget from the stored
+    reasoning level (see ``local_store.reasoning_budget``); both default to the module constants.
+    The terminal :class:`DoneEvent` carries this turn's real token usage and tool-call counts so
+    the route can record them into the local metrics store.
     """
     user = User(id=ctx.user_id, lab_id=ctx.lab_id, person_id=ctx.user_id)
     client = _build_client(settings)
     tools = _tool_specs()
     model = settings.query_model
+    iter_cap = max_iterations if max_iterations and max_iterations > 0 else _MAX_ITERATIONS
+    token_cap = max_tokens if max_tokens and max_tokens > 0 else _MAX_TOKENS
 
     messages: list[MessageParam] = [{"role": "user", "content": query}]
     # Facts accumulate across search calls so the final answer's citations cover everything the
@@ -418,15 +438,21 @@ async def run_agent(
     # The last protocol the model designed, so ``simulate_protocol`` has something to dry-run.
     last_protocol: ProtocolOut | None = None
     answered = False
+    # Real usage tallies for this turn (folded into local metrics by the route).
+    usage = {"input": 0, "output": 0, "toolCalls": 0, "iterations": 0}
+    tool_counts: dict[str, int] = {}
 
-    for _ in range(_MAX_ITERATIONS):
+    for _ in range(iter_cap):
         message = await client.messages.create(
             model=model,
-            max_tokens=_MAX_TOKENS,
+            max_tokens=token_cap,
             system=_SYSTEM_PROMPT,
             tools=tools,
             messages=messages,
         )
+        usage["iterations"] += 1
+        usage["input"] += int(getattr(message.usage, "input_tokens", 0) or 0)
+        usage["output"] += int(getattr(message.usage, "output_tokens", 0) or 0)
 
         # Surface any prose the model emitted alongside its tool calls as a "thought".
         for block in message.content:
@@ -440,7 +466,7 @@ async def run_agent(
             final_text = _final_text(message)
             if final_text or not answered:
                 yield AnswerEvent(text=final_text, citations=_citations_out(grounded))
-            yield DoneEvent()
+            yield _done(usage, tool_counts)
             return
 
         # Record the assistant turn (with its tool_use blocks) before the tool results. The SDK
@@ -452,6 +478,8 @@ async def run_agent(
         tool_results: list[ToolResultBlockParam] = []
         for use in tool_uses:
             tool_id = uuid.uuid4().hex[:12]
+            usage["toolCalls"] += 1
+            tool_counts[use.name] = tool_counts.get(use.name, 0) + 1
             yield ToolStartEvent(
                 id=tool_id,
                 tool=use.name,
@@ -488,7 +516,18 @@ async def run_agent(
         ),
         citations=_citations_out(grounded),
     )
-    yield DoneEvent()
+    yield _done(usage, tool_counts)
+
+
+def _done(usage: dict[str, int], tool_counts: dict[str, int]) -> DoneEvent:
+    """Build the terminal event carrying this turn's real usage (tokens + tool calls)."""
+    return DoneEvent(
+        input_tokens=usage["input"],
+        output_tokens=usage["output"],
+        tool_calls=usage["toolCalls"],
+        iterations=usage["iterations"],
+        tool_counts=dict(tool_counts),
+    )
 
 
 # --- tool dispatch ----------------------------------------------------------------------------

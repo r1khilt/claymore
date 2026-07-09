@@ -25,11 +25,12 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
+from claymore import local_store
 from claymore.agent import RequestContext, get_runtime
-from claymore.agent.agent_loop import ErrorEvent, event_json, run_agent
-from claymore.config import get_settings
+from claymore.agent.agent_loop import DoneEvent, ErrorEvent, event_json, run_agent
+from claymore.config import Settings, get_settings
 from claymore.logging import get_logger
 
 _log = get_logger("api.agent")
@@ -37,9 +38,22 @@ _log = get_logger("api.agent")
 router = APIRouter()
 
 _UNAVAILABLE = (
-    "agent unavailable — set WEB_API_ENABLED + ANTHROPIC_API_KEY, "
-    "the web UI runs on mock data without it"
+    "agent unavailable — set WEB_API_ENABLED and provide an Anthropic key "
+    "(env ANTHROPIC_API_KEY or Settings → API keys); the web UI runs on mock data without it"
 )
+
+
+def _effective_key(settings: Settings) -> str:
+    """The Anthropic key to run with: the env key, else the one saved in local Settings."""
+    env_key = settings.anthropic_api_key.get_secret_value()
+    return env_key or local_store.stored_anthropic_key()
+
+
+def _settings_with_key(settings: Settings, key: str) -> Settings:
+    """A copy of settings whose Anthropic key is ``key`` (frozen model → ``model_copy``)."""
+    if key == settings.anthropic_api_key.get_secret_value():
+        return settings
+    return settings.model_copy(update={"anthropic_api_key": SecretStr(key)})
 
 
 class AgentRequest(BaseModel):
@@ -56,22 +70,36 @@ async def _error_stream(message: str) -> AsyncIterator[str]:
     yield _sse(event_json(ErrorEvent(message=message)))
 
 
-async def _event_stream(query: str) -> AsyncIterator[str]:
+async def _event_stream(query: str, settings: Settings) -> AsyncIterator[str]:
     """Drive the agent loop and frame each event as SSE. Loop errors surface as an ``error`` event
-    rather than a dropped connection, so the client always sees a clean terminal state."""
-    settings = get_settings()
+    rather than a dropped connection, so the client always sees a clean terminal state. The
+    terminal ``done``/``error`` events are also recorded into the local metrics/error store."""
     store = get_runtime().store
     ctx = RequestContext(
         user_id=settings.web_user_id,
         lab_id=settings.web_lab_id,
         group_ids=(settings.web_lab_id,),
     )
+    max_iters, max_tokens = local_store.reasoning_budget()
     _log.info("web.agent.start", chars=len(query))
     try:
-        async for event in run_agent(ctx, query, store, settings):
+        async for event in run_agent(
+            ctx, query, store, settings, max_iterations=max_iters, max_tokens=max_tokens
+        ):
+            if isinstance(event, DoneEvent):
+                local_store.record_run(
+                    input_tokens=event.input_tokens,
+                    output_tokens=event.output_tokens,
+                    tool_calls=event.tool_calls,
+                    tool_counts=event.tool_counts,
+                    model=settings.query_model,
+                )
+            elif isinstance(event, ErrorEvent):
+                local_store.record_error(event.message, context="agent.loop")
             yield _sse(event_json(event))
     except Exception as exc:  # never leak internals; give the client a terminal error event
         _log.exception("web.agent.failed")
+        local_store.record_error(f"agent error: {str(exc)[:200]}", context="agent.stream")
         yield _sse(event_json(ErrorEvent(message=f"agent error: {str(exc)[:200]}")))
 
 
@@ -79,10 +107,13 @@ async def _event_stream(query: str) -> AsyncIterator[str]:
 async def agent(body: AgentRequest) -> StreamingResponse:
     settings = get_settings()
     query = body.query.strip()
-    if not settings.web_api_enabled or not settings.anthropic_api_key.get_secret_value():
+    key = _effective_key(settings)
+    if not settings.web_api_enabled or not key:
         return StreamingResponse(_error_stream(_UNAVAILABLE), media_type="text/event-stream")
     if not query:
         return StreamingResponse(
             _error_stream("empty query"), media_type="text/event-stream"
         )
-    return StreamingResponse(_event_stream(query), media_type="text/event-stream")
+    return StreamingResponse(
+        _event_stream(query, _settings_with_key(settings, key)), media_type="text/event-stream"
+    )

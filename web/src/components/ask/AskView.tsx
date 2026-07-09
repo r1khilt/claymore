@@ -13,6 +13,12 @@ interface Turn {
   running: boolean
 }
 
+/** A persisted turn (no transient `running` flag) — the shape stored in a chat. */
+export interface PersistTurn {
+  q: string
+  events: AgentEvent[]
+}
+
 const SUGGESTIONS = [
   'Fill a 96-well plate with buffer',
   'Set up a PCR plate on the thermocycler',
@@ -40,11 +46,37 @@ function Suggestions({ onPick }: { onPick: (q: string) => void }) {
   )
 }
 
-export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => void }) {
+export function AskView({
+  onOpenProtocol,
+  initialTurns,
+  onPersist,
+  onNewChat,
+}: {
+  onOpenProtocol: (p: Protocol) => void
+  /** Turns to seed the Composer with when restoring a saved chat (parent remounts on change). */
+  initialTurns?: PersistTurn[]
+  /** Called after every completed turn so the parent can persist the chat locally. */
+  onPersist?: (turns: PersistTurn[]) => void
+  /** Start a fresh chat (parent clears the active chat id). */
+  onNewChat?: () => void
+}) {
   const [value, setValue] = useState('')
-  const [turns, setTurns] = useState<Turn[]>([])
+  const [turns, setTurns] = useState<Turn[]>(() =>
+    (initialTurns ?? []).map((t) => ({ ...t, running: false })),
+  )
   const [busy, setBusy] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
+  // Mirror of `turns` kept in sync through every update so persistence reads the latest snapshot
+  // without waiting on a React state flush.
+  const turnsRef = useRef<Turn[]>(turns)
+
+  function applyTurns(fn: (t: Turn[]) => Turn[]) {
+    setTurns((prev) => {
+      const next = fn(prev)
+      turnsRef.current = next
+      return next
+    })
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -54,17 +86,25 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
     const q = (raw ?? value).trim()
     if (!q || busy) return
     setValue('')
-    const idx = turns.length
-    setTurns((t) => [...t, { q, events: [], running: true }])
+    const idx = turnsRef.current.length
+    applyTurns((t) => [...t, { q, events: [], running: true }])
     setBusy(true)
     try {
       for await (const ev of agentStream(q)) {
-        setTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, events: [...turn.events, ev] } : turn)))
+        applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, events: [...turn.events, ev] } : turn)))
       }
     } finally {
-      setTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, running: false } : turn)))
+      applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, running: false } : turn)))
       setBusy(false)
+      onPersist?.(turnsRef.current.map(({ q: tq, events }) => ({ q: tq, events })))
     }
+  }
+
+  function newChat() {
+    if (busy) return
+    applyTurns(() => [])
+    setValue('')
+    onNewChat?.()
   }
 
   const empty = turns.length === 0
@@ -107,11 +147,7 @@ export function AskView({ onOpenProtocol }: { onOpenProtocol: (p: Protocol) => v
       <div className="flex items-center justify-between px-6 pt-5">
         <span className="text-[12px] font-medium uppercase tracking-[0.12em] text-faint">Composer</span>
         <button
-          onClick={() => {
-            if (busy) return
-            setTurns([])
-            setValue('')
-          }}
+          onClick={newChat}
           className="flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/40 px-3 py-1.5 text-[13px] text-muted transition-colors hover:bg-white/70 hover:text-ink"
         >
           <Plus className="size-3.5" strokeWidth={2} />

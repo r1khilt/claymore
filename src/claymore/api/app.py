@@ -16,6 +16,7 @@ from claymore import __version__, agent
 from claymore.api.routes.admin import router as admin_router
 from claymore.api.routes.agent import router as agent_router
 from claymore.api.routes.ask import router as ask_router
+from claymore.api.routes.local import router as local_router
 from claymore.api.routes.telegram import router as telegram_router
 from claymore.api.routes.whatsapp import router as whatsapp_router
 from claymore.api.runtime import build_runtime
@@ -54,6 +55,7 @@ app.include_router(telegram_router)
 app.include_router(admin_router)
 app.include_router(ask_router)  # POST /api/ask (web dashboard; gated by WEB_API_ENABLED)
 app.include_router(agent_router)  # POST /api/agent (Composer SSE; gated by WEB_API_ENABLED + key)
+app.include_router(local_router)  # /api/local/* (chats/settings/metrics; local file, ungated)
 
 
 @app.get("/healthz")

@@ -1,8 +1,9 @@
 import { motion } from 'framer-motion'
-import { Clock, BookOpen, SearchX } from 'lucide-react'
+import { Clock, BookOpen } from 'lucide-react'
 import type { Reply } from '@/lib/types'
 import { CitationCard } from './CitationCard'
 import { PendingActionCard } from './PendingActionCard'
+import { Markdown } from './Markdown'
 
 export function AnswerView({ reply }: { reply: Reply }) {
   const grounded = reply.citations.length > 0
@@ -23,16 +24,9 @@ export function AnswerView({ reply }: { reply: Reply }) {
         </div>
       )}
 
-      {grounded ? (
-        <p className="text-[16.5px] leading-[1.72] text-ink/90">{reply.text}</p>
-      ) : (
-        <div className="glass flex items-start gap-3 rounded-2xl p-4">
-          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-black/[0.05] text-muted">
-            <SearchX className="size-[18px]" strokeWidth={1.85} />
-          </span>
-          <p className="text-[15px] leading-relaxed text-ink/80">{reply.text}</p>
-        </div>
-      )}
+      <div className="text-[16.5px] leading-[1.72] text-ink/90">
+        <Markdown text={reply.text} />
+      </div>
 
       {grounded && (
         <div className="mt-1">

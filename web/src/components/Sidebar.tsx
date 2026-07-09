@@ -8,9 +8,11 @@ import {
   Radar,
   PanelLeftClose,
   ChevronsUpDown,
+  Plus,
   type LucideIcon,
 } from 'lucide-react'
 import type { View } from '@/lib/types'
+import type { ChatSummary, Profile } from '@/lib/local'
 import { cn } from '@/lib/utils'
 import { Avatar } from '@/components/ui/Avatar'
 
@@ -38,10 +40,20 @@ export function Sidebar({
   view,
   onNavigate,
   badges,
+  profile,
+  chats,
+  activeChatId,
+  onOpenChat,
+  onNewChat,
 }: {
   view: View
   onNavigate: (v: View) => void
   badges?: Partial<Record<View, number>>
+  profile: Profile
+  chats: ChatSummary[]
+  activeChatId: string | null
+  onOpenChat: (id: string) => void
+  onNewChat: () => void
 }) {
   return (
     <aside className="flex h-full w-[220px] shrink-0 flex-col px-3 py-4">
@@ -89,27 +101,59 @@ export function Sidebar({
         })}
       </nav>
 
-      <div className="mt-6 px-3">
-        <div className="text-[11px] font-medium uppercase tracking-[0.13em] text-faint">Recent</div>
-        <div className="mt-2 flex flex-col gap-1.5 text-[13.5px] text-muted">
-          {['CBX2 allosteric idea', 'Assay buffer DMSO', 'Docking pipeline status'].map((t) => (
-            <button
-              key={t}
-              className="truncate rounded-lg px-2 py-1 text-left transition-colors hover:bg-black/5 hover:text-ink"
-            >
-              {t}
-            </button>
-          ))}
+      {/* recent chats — persisted locally */}
+      <div className="mt-6 flex min-h-0 flex-1 flex-col px-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-medium uppercase tracking-[0.13em] text-faint">Recent</span>
+          <button
+            onClick={onNewChat}
+            title="New chat"
+            className="grid size-5 place-items-center rounded-md text-faint transition-colors hover:bg-black/5 hover:text-muted"
+          >
+            <Plus className="size-3.5" strokeWidth={2} />
+          </button>
+        </div>
+        <div className="mt-2 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto text-[13.5px] text-muted">
+          {chats.length === 0 ? (
+            <span className="px-2 py-1 text-[12.5px] text-faint">No chats yet</span>
+          ) : (
+            chats.map((c) => {
+              const active = view === 'ask' && c.id === activeChatId
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => onOpenChat(c.id)}
+                  className={cn(
+                    'truncate rounded-lg px-2 py-1 text-left transition-colors hover:bg-black/5 hover:text-ink',
+                    active && 'bg-black/5 text-ink',
+                  )}
+                  title={c.title}
+                >
+                  {c.title}
+                </button>
+              )
+            })
+          )}
         </div>
       </div>
 
-      {/* user */}
-      <div className="mt-auto">
-        <button className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-black/5">
-          <Avatar name="Rikhil T" accent="#3f7d5c" size={30} />
+      {/* user — opens Settings */}
+      <div className="mt-2">
+        <button
+          onClick={() => onNavigate('settings')}
+          className={cn(
+            'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-black/5',
+            view === 'settings' && 'bg-black/5',
+          )}
+        >
+          {profile.avatarDataUrl ? (
+            <img src={profile.avatarDataUrl} alt="" className="size-[30px] shrink-0 rounded-full object-cover ring-1 ring-black/10" />
+          ) : (
+            <Avatar name={profile.name || 'You'} accent={profile.avatarColor} size={30} />
+          )}
           <div className="min-w-0">
-            <div className="truncate text-[13.5px] font-medium text-ink">Rikhil T</div>
-            <div className="truncate text-[12px] text-faint">Claymore Lab</div>
+            <div className="truncate text-[13.5px] font-medium text-ink">{profile.name || 'You'}</div>
+            <div className="truncate text-[12px] text-faint">{profile.lab || 'Claymore Lab'}</div>
           </div>
           <ChevronsUpDown className="ml-auto size-4 text-faint" strokeWidth={1.75} />
         </button>

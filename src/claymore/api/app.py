@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from claymore import __version__, agent
 from claymore.api.routes.admin import router as admin_router
+from claymore.api.routes.ask import router as ask_router
 from claymore.api.routes.telegram import router as telegram_router
 from claymore.api.routes.whatsapp import router as whatsapp_router
 from claymore.api.runtime import build_runtime
@@ -50,6 +51,7 @@ app = FastAPI(title="Claymore", version=__version__, lifespan=lifespan)
 app.include_router(whatsapp_router)
 app.include_router(telegram_router)
 app.include_router(admin_router)
+app.include_router(ask_router)  # POST /api/ask (web dashboard; gated by WEB_API_ENABLED)
 
 
 @app.get("/healthz")

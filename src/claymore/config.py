@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     """Bearer for ``/admin/*``. Empty ⇒ every admin request is rejected (fail-closed) — the
     API may be exposed through a public tunnel, so these routes are never open."""
 
+    # --- web UI (browser dashboard -> /api/ask) ---
+    web_api_enabled: bool = False
+    """Expose ``POST /api/ask`` for the ``web/`` dashboard. Off by default: unlike Telegram it
+    has no per-message auth and answers as one configured demo identity, so enable only for
+    local dev / a trusted deployment. Retrieval scoping + grounding still apply (R10/R13)."""
+    web_lab_id: str = "lab1"
+    web_user_id: str = "web-user"
+
     # --- messaging (Phase 2) ---
     twilio_account_sid: SecretStr = SecretStr("")
     twilio_auth_token: SecretStr = SecretStr("")

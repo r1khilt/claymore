@@ -6,11 +6,14 @@ import {
   wellCenter,
   wellToRC,
   gridFor,
+  isReservoir,
+  type DeckModule,
   type Labware,
   type Protocol,
   type RunState,
   type Step,
 } from '@/lib/protocol'
+import { MODULES } from '@/lib/hardware'
 
 const PLATE_BG = '#eceae2'
 const SLOT_BG = '#f5f4ef'
@@ -62,10 +65,10 @@ function LabwareView({
 }) {
   const { rows, cols } = gridFor(lab.kind)
 
-  if (lab.kind === 'reservoir_12') {
+  if (isReservoir(lab.kind)) {
     return (
       <g>
-        {Array.from({ length: 12 }).map((_, c) => {
+        {Array.from({ length: cols }).map((_, c) => {
           const g = wellCenter(lab.slot, lab.kind, 0, c)
           const r = slotRect(lab.slot)
           return (
@@ -129,14 +132,51 @@ function targetWells(p: Protocol, step: Step | null) {
   const lab = p.deck.labware.find((l) => l.id === step.labwareId)
   if (!lab || lab.kind === 'reservoir_12') return []
   const { row, col } = wellToRC(step.well)
-  const multi = p.deck.pipette.channels === 8
-  const rowList = multi ? [0, 1, 2, 3, 4, 5, 6, 7] : [row]
+  const { rows } = gridFor(lab.kind)
+  const multi = p.deck.pipette.channels >= 8
+  const rowList = multi ? Array.from({ length: rows }, (_, i) => i) : [row]
   return rowList.map((r) => wellCenter(lab.slot, lab.kind, r, col))
+}
+
+function Modules({ modules }: { modules: DeckModule[] }) {
+  return (
+    <>
+      {modules.map((m) => {
+        const r = slotRect(m.slot)
+        const def = MODULES[m.kind]
+        return (
+          <g key={m.id}>
+            <rect
+              x={r.x + 2}
+              y={r.y + 2}
+              width={r.w - 4}
+              height={r.h - 4}
+              rx={8}
+              fill={def.tint}
+              opacity={0.13}
+              stroke={def.tint}
+              strokeOpacity={0.32}
+              strokeWidth={1}
+            />
+            <rect x={r.x + 6} y={r.y + 6} width={28} height={13} rx={3} fill={def.tint} opacity={0.92} />
+            <text x={r.x + 20} y={r.y + 15.4} textAnchor="middle" fontSize={8} fontWeight={700} fill="#fff">
+              {def.short}
+            </text>
+            {m.state && (
+              <text x={r.x + r.w - 6} y={r.y + r.h - 6} textAnchor="end" fontSize={7.5} fill={def.tint}>
+                {m.state}
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </>
+  )
 }
 
 function Pipette({ protocol, state }: { protocol: Protocol; state: RunState }) {
   const { pos, hasTip, current, dipping } = state
-  const multi = protocol.deck.pipette.channels === 8
+  const multi = protocol.deck.pipette.channels >= 8
   const rings = targetWells(protocol, current)
   return (
     <g>
@@ -233,6 +273,7 @@ export function Deck2D({
       {Array.from({ length: 12 }).map((_, i) => (
         <Slot key={i} slot={i + 1} />
       ))}
+      {protocol.deck.modules.length > 0 && <Modules modules={protocol.deck.modules} />}
       {protocol.deck.labware.map((lab) => (
         <LabwareView key={lab.id} lab={lab} fills={fills} liquid={liquid} />
       ))}

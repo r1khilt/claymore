@@ -8,10 +8,13 @@ import {
   slotRect,
   wellCenter,
   gridFor,
+  isReservoir,
+  type DeckModule,
   type Labware,
   type Protocol,
   type RunState,
 } from '@/lib/protocol'
+import { MODULES } from '@/lib/hardware'
 
 const S = 0.026
 const LETTERS = 'ABCDEFGH'
@@ -25,14 +28,14 @@ function LabwareMesh({ lab, fills }: { lab: Labware; fills: Record<string, numbe
   const r = slotRect(lab.slot)
   const base: [number, number, number] = [wx(r.x + r.w / 2), DECK_TOP + 0.06, wz(r.y + r.h / 2)]
 
-  if (lab.kind === 'reservoir_12') {
+  if (isReservoir(lab.kind)) {
     return (
       <group>
         <mesh position={base} castShadow>
           <boxGeometry args={[r.w * S * 0.94, 0.12, r.h * S * 0.94]} />
           <meshStandardMaterial color="#cfe0ee" />
         </mesh>
-        {Array.from({ length: 12 }).map((_, c) => {
+        {Array.from({ length: gridFor(lab.kind).cols }).map((_, c) => {
           const g = wellCenter(lab.slot, lab.kind, 0, c)
           return (
             <mesh key={c} position={[wx(g.x), DECK_TOP + 0.14, wz(g.y)]}>
@@ -76,10 +79,21 @@ function LabwareMesh({ lab, fills }: { lab: Labware; fills: Record<string, numbe
   )
 }
 
+function ModuleMesh({ mod }: { mod: DeckModule }) {
+  const r = slotRect(mod.slot)
+  const c = new THREE.Color(MODULES[mod.kind].tint)
+  return (
+    <mesh position={[wx(r.x + r.w / 2), DECK_TOP + 0.02, wz(r.y + r.h / 2)]}>
+      <boxGeometry args={[r.w * S * 0.96, 0.14, r.h * S * 0.96]} />
+      <meshStandardMaterial color={c} transparent opacity={0.9} emissive={c} emissiveIntensity={0.12} />
+    </mesh>
+  )
+}
+
 function Gantry({ protocol, state }: { protocol: Protocol; state: RunState }) {
   const bridge = useRef<THREE.Group>(null)
   const carriage = useRef<THREE.Group>(null)
-  const multi = protocol.deck.pipette.channels === 8
+  const multi = protocol.deck.pipette.channels >= 8
 
   const target = useRef({ x: wx(state.pos.x), z: wz(state.pos.y), dip: state.dipping })
   target.current = { x: wx(state.pos.x), z: wz(state.pos.y), dip: state.dipping }
@@ -161,6 +175,9 @@ function Scene({ protocol, state }: { protocol: Protocol; state?: RunState }) {
           </mesh>
         )
       })}
+      {protocol.deck.modules.map((m) => (
+        <ModuleMesh key={m.id} mod={m} />
+      ))}
       {protocol.deck.labware.map((lab) => (
         <LabwareMesh key={lab.id} lab={lab} fills={state?.fills ?? {}} />
       ))}

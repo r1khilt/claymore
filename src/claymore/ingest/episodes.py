@@ -22,9 +22,13 @@ Design invariants (why this shape):
 
 from __future__ import annotations
 
+import asyncio
+import os
+import sqlite3
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from claymore.domain import LabId
 from claymore.ingest.normalize import Episode
@@ -115,6 +119,142 @@ class InMemoryEpisodeLog(EpisodeLog):
 
     async def count(self, lab_id: LabId) -> int:
         return len(self._episodes.get(lab_id, ()))
+
+
+class SQLiteEpisodeLog(EpisodeLog):
+    """Durable single-node episode log backed by the Python stdlib's SQLite driver.
+
+    This is the local/product adapter: it gives the dashboard crash-safe dedup and replay without
+    requiring an operator to provision Postgres. A hosted multi-worker deployment can replace it
+    behind :class:`EpisodeLog`; the schema and idempotency contract stay identical.
+
+    Raw episode text is unpublished lab data. The database directory/file are created private to
+    the current user where the platform supports POSIX permissions. WAL mode permits reads while a
+    sync is appending, and every public method moves blocking SQLite work off the event loop.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._path = Path(path).expanduser()
+        self._clock = clock
+        self._prepare()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @staticmethod
+    def _iso(dt: datetime) -> str:
+        """UTC-normalized ISO text so SQLite's lexical ordering is chronological."""
+        return ensure_aware(dt).astimezone(UTC).isoformat()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._path, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+
+    def _prepare(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(self._path.parent, 0o700)
+        except OSError:
+            pass
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS episodes (
+                    lab_id TEXT NOT NULL,
+                    episode_key TEXT NOT NULL,
+                    source_platform TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    source_timestamp TEXT NOT NULL,
+                    ingested_at TEXT NOT NULL,
+                    episode_json TEXT NOT NULL,
+                    PRIMARY KEY (lab_id, episode_key)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodes_lab_time "
+                "ON episodes(lab_id, source_timestamp, ingested_at)"
+            )
+        try:
+            os.chmod(self._path, 0o600)
+        except OSError:
+            pass
+
+    async def append(self, episode: Episode) -> bool:
+        stamped = episode.model_copy(update={"ingested_at": self._clock()})
+        key = episode_key(stamped)
+
+        def write() -> bool:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO episodes (
+                        lab_id, episode_key, source_platform, source_id,
+                        source_timestamp, ingested_at, episode_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        stamped.lab_id,
+                        key,
+                        stamped.source_platform.value,
+                        stamped.source_id,
+                        self._iso(stamped.timestamp),
+                        self._iso(stamped.ingested_at or self._clock()),
+                        stamped.model_dump_json(),
+                    ),
+                )
+                return cur.rowcount == 1
+
+        return await asyncio.to_thread(write)
+
+    async def exists(self, episode: Episode) -> bool:
+        key = episode_key(episode)
+
+        def read() -> bool:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM episodes WHERE lab_id = ? AND episode_key = ? LIMIT 1",
+                    (episode.lab_id, key),
+                ).fetchone()
+            return row is not None
+
+        return await asyncio.to_thread(read)
+
+    async def iter_since(
+        self, lab_id: LabId, since: datetime | None = None
+    ) -> AsyncIterator[Episode]:
+        cutoff = self._iso(since) if since is not None else None
+
+        def read() -> list[str]:
+            sql = "SELECT episode_json FROM episodes WHERE lab_id = ?"
+            params: tuple[str, ...] = (lab_id,)
+            if cutoff is not None:
+                sql += " AND source_timestamp >= ?"
+                params = (lab_id, cutoff)
+            sql += " ORDER BY source_timestamp ASC, ingested_at ASC"
+            with self._connect() as conn:
+                return [str(row[0]) for row in conn.execute(sql, params).fetchall()]
+
+        for payload in await asyncio.to_thread(read):
+            yield Episode.model_validate_json(payload)
+
+    async def count(self, lab_id: LabId) -> int:
+        def read() -> int:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM episodes WHERE lab_id = ?", (lab_id,)
+                ).fetchone()
+            return int(row[0]) if row else 0
+
+        return await asyncio.to_thread(read)
 
 
 async def replay(log: EpisodeLog, store: MemoryStore, lab_id: LabId) -> int:

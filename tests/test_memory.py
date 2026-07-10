@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
-from claymore.domain import UNKNOWN_AUTHOR, SourcePlatform
-from claymore.memory.graph import InMemoryMemoryStore, ensure_aware, episode_key
+from claymore.domain import UNKNOWN_AUTHOR, SourcePlatform, Visibility
+from claymore.memory.graph import (
+    InMemoryMemoryStore,
+    _SQLiteGraphProvenance,
+    ensure_aware,
+    episode_key,
+)
 from claymore.memory.identity import IdentityResolver, normalize_handle
-from claymore.memory.ontology import EdgeType
+from claymore.memory.ontology import EdgeType, Provenance
 from claymore.memory.retrieval import retrieve
 from tests.fixtures import (
     DM_LUCAS_PHILIP,
@@ -156,3 +162,29 @@ def test_normalize_handle_nfkc_and_casefold() -> None:
     assert normalize_handle("  @Lucas ") == "lucas"
     # full-width @ + uppercase should fold to the same key as the ascii handle
     assert normalize_handle("＠LUCAS") == normalize_handle("@lucas")  # noqa: RUF001
+
+
+async def test_graph_provenance_sidecar_survives_reopen_and_scopes_labs(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = _SQLiteGraphProvenance(path)
+    provenance = Provenance(
+        source_platform=SourcePlatform.SLACK,
+        source_id="C1:1.0",
+        timestamp=datetime(2026, 7, 9, tzinfo=UTC),
+        author="p_lucas",
+    )
+    visibility = Visibility(
+        lab_wide=False,
+        allowed_user_ids=frozenset({"u_lucas"}),
+        source_label="private channel",
+    )
+    await state.put(LAB, "slack:C1:1.0:hash", "graph-uuid-1", provenance, visibility)
+
+    seen, loaded = await _SQLiteGraphProvenance(path).load(LAB)
+    assert seen == {"slack:C1:1.0:hash"}
+    assert loaded == {"graph-uuid-1": (provenance, visibility)}
+    other_seen, other_loaded = await state.load("other-lab")
+    assert other_seen == set()
+    assert other_loaded == {}

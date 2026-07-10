@@ -7,8 +7,10 @@ Ties the read-side connectors (``ConnectorHub``) to memory. For each Episode a s
 2. **Append to the durable log** (R14) — the append-only Episode log is the replay source of
    truth; the graph is a derived, rebuildable projection. Dedup here means we never re-pay
    extraction for an episode we've already seen (R6).
-3. **Extract into the graph** — only episodes newly added to the log are handed to the
-   ``MemoryStore`` (which is itself idempotent, so a crash mid-run is safe to re-run).
+3. **Project into the graph** — every delivered episode is handed to the idempotent
+   ``MemoryStore``. New episodes normally pay extraction once; a duplicate delivery lets a
+   process restart rebuild its in-memory provenance sidecar and lets an extraction that failed
+   after the durable append retry safely.
 
 Every run writes one audit record (R5/CLAUDE.md rule 5). A single malformed episode is skipped
 and logged — it never aborts the batch (a lab's whole backfill shouldn't die on one bad item).
@@ -25,6 +27,7 @@ from pydantic import BaseModel, ConfigDict
 from claymore.audit import AuditRecord, AuditSink, LoggingAuditSink, TrustOrigin
 from claymore.domain import LabId, SourcePlatform
 from claymore.ingest.episodes import EpisodeLog
+from claymore.memory.graph import ensure_aware
 from claymore.memory.identity import IdentityResolver
 from claymore.ports import ConnectorHub, MemoryStore
 
@@ -52,6 +55,9 @@ class IngestStats(BaseModel):
 
     unresolved_authors: int
     """Stored episodes whose author could not be resolved to a lab person (surfaced, R11)."""
+
+    latest_source_at: datetime | None = None
+    """Newest successfully projected source timestamp, used as a durable incremental cursor."""
 
 
 async def ingest_source(
@@ -81,6 +87,7 @@ async def ingest_source(
 
     audit = audit or LoggingAuditSink()
     seen = stored = extracted = skipped = unresolved = 0
+    latest_source_at: datetime | None = None
 
     stream = hub.incremental(lab_id, source) if incremental else hub.backfill(lab_id, source, since)
     async for episode in stream:
@@ -99,13 +106,19 @@ async def ingest_source(
             if resolver is not None:
                 episode = resolver.resolve_episode(episode)
             is_new = await log.append(episode)
-            if not is_new:
-                continue  # duplicate — already ingested + extracted (R6)
-            stored += 1
-            if episode.author == UNKNOWN_AUTHOR:
-                unresolved += 1
+            if is_new:
+                stored += 1
+                if episode.author == UNKNOWN_AUTHOR:
+                    unresolved += 1
+            # The store owns projection idempotency. Calling it for a log duplicate is important:
+            # the prior process may have crashed after append but before extraction, or this process
+            # may need to rebuild Graphiti's in-memory provenance sidecar after a restart.
             await store.add_episode(episode)
-            extracted += 1
+            if is_new:
+                extracted += 1
+            timestamp = ensure_aware(episode.timestamp)
+            if latest_source_at is None or timestamp > latest_source_at:
+                latest_source_at = timestamp
         except Exception:
             # One bad item never aborts a whole backfill (ENGINEERING_GUIDELINES §3).
             skipped += 1
@@ -122,6 +135,7 @@ async def ingest_source(
         extracted=extracted,
         skipped_errors=skipped,
         unresolved_authors=unresolved,
+        latest_source_at=latest_source_at,
     )
     await audit.write(
         AuditRecord(
@@ -136,6 +150,7 @@ async def ingest_source(
                 "extracted": str(extracted),
                 "skipped_errors": str(skipped),
                 "unresolved_authors": str(unresolved),
+                "latest_source_at": latest_source_at.isoformat() if latest_source_at else "",
                 "mode": "incremental" if incremental else "backfill",
             },
         )

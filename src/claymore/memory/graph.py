@@ -21,8 +21,12 @@ logged, never returned unattributed.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -38,6 +42,100 @@ if TYPE_CHECKING:
     from graphiti_core.embedder.client import EmbedderClient
 
 logger = structlog.get_logger(__name__)
+
+
+class _SQLiteGraphProvenance:
+    """Durable Graphiti episode UUID → Claymore provenance/ACL sidecar.
+
+    Graphiti facts retain supporting episode UUIDs, but not Claymore's source attribution or
+    visibility. Persisting this small join table alongside the Episode log makes attributed search
+    and extraction dedup survive API restarts without storing raw source text twice.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(self.path.parent, 0o700)
+        except OSError:
+            pass
+        conn = sqlite3.connect(self.path, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS graph_provenance (
+                lab_id TEXT NOT NULL,
+                episode_key TEXT NOT NULL,
+                graph_episode_uuid TEXT NOT NULL,
+                provenance_json TEXT NOT NULL,
+                visibility_json TEXT NOT NULL,
+                PRIMARY KEY (lab_id, episode_key),
+                UNIQUE (lab_id, graph_episode_uuid)
+            )
+            """
+        )
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+        return conn
+
+    async def load(
+        self, lab_id: LabId
+    ) -> tuple[set[str], dict[str, tuple[Provenance, Visibility]]]:
+        def read() -> tuple[set[str], dict[str, tuple[Provenance, Visibility]]]:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT episode_key, graph_episode_uuid, provenance_json, visibility_json "
+                    "FROM graph_provenance WHERE lab_id = ?",
+                    (lab_id,),
+                ).fetchall()
+            seen: set[str] = set()
+            sidecar: dict[str, tuple[Provenance, Visibility]] = {}
+            for key, graph_uuid, provenance_json, visibility_json in rows:
+                seen.add(str(key))
+                sidecar[str(graph_uuid)] = (
+                    Provenance.model_validate_json(str(provenance_json)),
+                    Visibility.model_validate_json(str(visibility_json)),
+                )
+            return seen, sidecar
+
+        return await asyncio.to_thread(read)
+
+    async def put(
+        self,
+        lab_id: LabId,
+        key: str,
+        graph_uuid: str,
+        provenance: Provenance,
+        visibility: Visibility,
+    ) -> None:
+        def write() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO graph_provenance (
+                        lab_id, episode_key, graph_episode_uuid,
+                        provenance_json, visibility_json
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(lab_id, episode_key) DO UPDATE SET
+                        graph_episode_uuid = excluded.graph_episode_uuid,
+                        provenance_json = excluded.provenance_json,
+                        visibility_json = excluded.visibility_json
+                    """,
+                    (
+                        lab_id,
+                        key,
+                        graph_uuid,
+                        provenance.model_dump_json(),
+                        visibility.model_dump_json(),
+                    ),
+                )
+
+        await asyncio.to_thread(write)
 
 
 def ensure_aware(dt: datetime) -> datetime:
@@ -299,11 +397,29 @@ class GraphitiMemoryStore(MemoryStore):
     so it survives restarts; today a restart means re-adding episodes (idempotent).
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, state_path: str | Path | None = None) -> None:
+        from claymore.local_store import local_dir
+
         self._settings = settings
         self._clients: dict[LabId, Graphiti] = {}
         self._seen: dict[LabId, set[str]] = {}  # episode_key dedup (R6)
         self._sidecar: dict[LabId, dict[str, tuple[Provenance, Visibility]]] = {}
+        self._loaded_labs: set[LabId] = set()
+        self._state_lock = asyncio.Lock()
+        self._provenance_state = _SQLiteGraphProvenance(
+            state_path if state_path is not None else local_dir() / "state.sqlite3"
+        )
+
+    async def _load_provenance(self, lab_id: LabId) -> None:
+        if lab_id in self._loaded_labs:
+            return
+        async with self._state_lock:
+            if lab_id in self._loaded_labs:
+                return
+            seen, sidecar = await self._provenance_state.load(lab_id)
+            self._seen.setdefault(lab_id, set()).update(seen)
+            self._sidecar.setdefault(lab_id, {}).update(sidecar)
+            self._loaded_labs.add(lab_id)
 
     def _client(self, lab_id: LabId) -> Graphiti:
         """Lazily build one Graphiti client per lab, isolated by FalkorDB database name."""
@@ -339,6 +455,7 @@ class GraphitiMemoryStore(MemoryStore):
         return client
 
     async def add_episode(self, episode: Episode) -> None:
+        await self._load_provenance(episode.lab_id)
         key = episode_key(episode)
         if key in self._seen.setdefault(episode.lab_id, set()):
             return
@@ -363,7 +480,15 @@ class GraphitiMemoryStore(MemoryStore):
             timestamp=reference_time,
             author=episode.author,
         )
-        self._sidecar.setdefault(episode.lab_id, {})[result.episode.uuid] = (
+        graph_uuid = str(result.episode.uuid)
+        await self._provenance_state.put(
+            episode.lab_id,
+            key,
+            graph_uuid,
+            provenance,
+            episode.visibility,
+        )
+        self._sidecar.setdefault(episode.lab_id, {})[graph_uuid] = (
             provenance,
             episode.visibility,
         )
@@ -382,6 +507,7 @@ class GraphitiMemoryStore(MemoryStore):
             return []
         if not query.strip():
             return []
+        await self._load_provenance(lab_id)
         edges = await self._client(lab_id).search(query, group_ids=[lab_id], num_results=limit)
         sidecar = self._sidecar.get(lab_id, {})
         facts: list[Fact] = []

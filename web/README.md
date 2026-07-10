@@ -26,7 +26,8 @@ it looks alive with zero backend.
 | **Bench** | A deck workspace that renders **any** scene the agent authors: a detailed **2D deck** (moving gantry, per-reagent liquids with volume menisci, depleting tip racks, gripper labware moves, and live modules — thermocycler lid, heater-shaker, temperature, magnetic block, absorbance reader) with a **2D / 3D toggle** (react-three-fiber), the generated **Python** (Opentrons Protocol API *or* PyLabRobot), a step log, and a human-gated physical run. Airy, subtle, floating controls. |
 | **Right rail** | Recreated **Slack · iMessage · Notion · Gmail · GitHub** feeds showing the key messages the agent reasons on, each with an *in-memory* cue |
 | **Settings** | Local, single-user config: **profile** (name / lab / avatar upload / accent), **API keys** (Anthropic + Voyage, used to run the live Composer), **reasoning level** + live/debug toggles, **usage & metrics** (real token counts + per-tool call counts recorded from live runs), an **error log**, and a **Data** panel (where the file lives, export JSON, clear). |
-| **Memory / Approvals / Connectors / Proactive** | Full mocked views for the rest of the product surface |
+| **Memory / Approvals / Proactive** | Mock-backed product surfaces while their backend layers evolve |
+| **Connectors** | Live Composio-managed OAuth and incremental sync for Slack, Gmail, Notion, and GitHub when `VITE_CLAYMORE_LIVE=1`; realistic cards in mock mode |
 
 ## Local store — "keep it all local"
 
@@ -56,6 +57,10 @@ app-state store, and holds no multi-tenant scoping — one user, one machine.
   paste into **Settings → API keys** (stored in the local file, never logged). The live loop honors
   the Settings **reasoning level** (loop/token budget) and, on finish, records this turn's real
   token usage + tool-call counts into the local metrics store.
+
+  The **Connectors** view uses the same live switch. Add `COMPOSIO_API_KEY` to the backend `.env`,
+  click **Connect**, approve the provider in the popup, then click **Sync now**. Composio supplies
+  the managed Slack/Gmail/Notion/GitHub OAuth apps; no provider client secrets are required.
 
 ## Stack
 

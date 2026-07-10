@@ -7,9 +7,10 @@ timestamp ordering + ``since`` filtering, injected-clock ``ingested_at`` stampin
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 
-from claymore.ingest.episodes import InMemoryEpisodeLog, replay
+from claymore.ingest.episodes import InMemoryEpisodeLog, SQLiteEpisodeLog, replay
 from claymore.memory.graph import InMemoryMemoryStore
 from tests.fixtures import LAB, make_episode
 
@@ -123,3 +124,40 @@ async def test_replay_is_idempotent() -> None:
     await replay(log, store, LAB)
     second = await store.search(LAB, "hypothesis", group_ids=[LAB])
     assert len(first) == len(second)
+
+
+# --- SQLite adapter: the local product path survives process/object restarts ------------------
+
+
+async def test_sqlite_log_is_durable_and_deduplicates_after_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    episode = make_episode(source_id="durable", source_hash="v1")
+    first = SQLiteEpisodeLog(path, clock=fixed_clock)
+    assert await first.append(episode) is True
+
+    reopened = SQLiteEpisodeLog(path, clock=fixed_clock)
+    assert await reopened.append(episode) is False
+    assert await reopened.exists(episode) is True
+    assert await reopened.count(LAB) == 1
+    [stored] = [ep async for ep in reopened.iter_since(LAB)]
+    assert stored.source_id == "durable"
+    assert stored.ingested_at == FIXED
+
+
+async def test_sqlite_log_keeps_labs_and_versions_separate(tmp_path: Path) -> None:
+    log = SQLiteEpisodeLog(tmp_path / "state.sqlite3", clock=fixed_clock)
+    await log.append(make_episode(lab_id="lab-a", source_id="m", source_hash="v1"))
+    await log.append(make_episode(lab_id="lab-a", source_id="m", source_hash="v2"))
+    await log.append(make_episode(lab_id="lab-b", source_id="m", source_hash="v1"))
+    assert await log.count("lab-a") == 2
+    assert await log.count("lab-b") == 1
+
+
+async def test_sqlite_log_orders_mixed_offsets_by_absolute_time(tmp_path: Path) -> None:
+    log = SQLiteEpisodeLog(tmp_path / "state.sqlite3", clock=fixed_clock)
+    earlier = datetime(2026, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=2)))
+    later = datetime(2025, 12, 31, 23, 30, tzinfo=UTC)
+    await log.append(make_episode(source_id="earlier", timestamp=earlier))
+    await log.append(make_episode(source_id="later", timestamp=later))
+    ordered = [episode.source_id async for episode in log.iter_since(LAB)]
+    assert ordered == ["earlier", "later"]

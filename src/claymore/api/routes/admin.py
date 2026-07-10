@@ -10,15 +10,15 @@ constant time, fail-closed when unconfigured. These routes only *read* sources a
 the lab's own memory; they still count as spend (Composio executions + extraction tokens),
 hence the gate.
 
-State: one process-wide ``InMemoryEpisodeLog`` (dedup across runs, R6) and the ask loop's own
-``MemoryStore`` via ``agent.get_runtime().store`` — ingest and ask must share the store
-instance while the Graphiti provenance sidecar is in-process (see ``api/runtime.py``).
+State: the same local SQLite Episode log used by the connector dashboard (dedup/replay across
+restarts, R6/R14) and the ask loop's own ``MemoryStore`` via ``agent.get_runtime().store``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -30,7 +30,7 @@ from claymore.agent import get_runtime
 from claymore.api.runtime import roster_from_json
 from claymore.config import Settings, get_settings
 from claymore.domain import SourcePlatform
-from claymore.ingest.episodes import InMemoryEpisodeLog
+from claymore.ingest.episodes import EpisodeLog, InMemoryEpisodeLog, SQLiteEpisodeLog
 from claymore.ingest.pipeline import IngestStats, ingest_source
 from claymore.logging import get_logger
 from claymore.memory.identity import IdentityResolver
@@ -42,8 +42,22 @@ router = APIRouter()
 
 _TOKEN_HEADER = "X-Claymore-Admin-Token"  # noqa: S105 (header name, not a secret)
 
-# Process-wide episode log: dedup across ingest runs so a re-trigger never re-pays extraction.
-_episode_log = InMemoryEpisodeLog()
+# Lazy so importing the API never touches the user's home directory. The in-memory fallback is for
+# read-only/sandboxed environments; a normal local launch uses the durable state file.
+_episode_log: EpisodeLog | None = None
+
+
+def _get_episode_log() -> EpisodeLog:
+    global _episode_log
+    if _episode_log is None:
+        try:
+            from claymore.ingest.composio.manager import default_state_path
+
+            _episode_log = SQLiteEpisodeLog(default_state_path())
+        except (OSError, sqlite3.Error) as exc:
+            _log.warning("admin.episode_log_fallback", error_type=type(exc).__name__)
+            _episode_log = InMemoryEpisodeLog()
+    return _episode_log
 
 
 class IngestRequest(BaseModel):
@@ -81,7 +95,10 @@ def _build_hub(settings: Settings, resolver: IdentityResolver | None) -> Connect
     from claymore.ingest.composio.hub import ComposioConnectorHub
 
     return ComposioConnectorHub(
-        settings, resolver=resolver, user_id=settings.composio_user_id or None
+        settings,
+        resolver=resolver,
+        user_id=settings.composio_user_id or settings.web_user_id,
+        owner_user_id=settings.web_user_id,
     )
 
 
@@ -93,7 +110,7 @@ async def _run_ingest(job_id: str, req: IngestRequest, settings: Settings) -> No
         hub = _build_hub(settings, resolver)
         stats = await ingest_source(
             hub,
-            _episode_log,
+            _get_episode_log(),
             get_runtime().store,
             lab_id=req.lab_id,
             source=req.source,

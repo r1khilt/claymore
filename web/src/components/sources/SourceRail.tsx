@@ -1,4 +1,5 @@
 import { Layers } from 'lucide-react'
+import { isLive } from '@/lib/api'
 import { connectors, feeds } from '@/lib/mockData'
 import { SourcePanel } from './SourcePanel'
 
@@ -9,11 +10,11 @@ export function SourceRail() {
       <div className="flex items-center justify-between px-4 pb-3 pt-5">
         <div className="flex items-center gap-1.5 text-[12px] font-medium uppercase tracking-[0.12em] text-faint">
           <Layers className="size-3.5" strokeWidth={2} />
-          Live sources
+          {isLive ? 'Source preview' : 'Demo sources'}
         </div>
         <span className="flex items-center gap-1.5 text-[11.5px] text-muted">
-          <span className="size-1.5 rounded-full bg-sage-500" />
-          {connected} connected
+          <span className="size-1.5 rounded-full bg-amber-400" />
+          {isLive ? 'sample data' : `${connected} demo`}
         </span>
       </div>
       <div className="no-scrollbar flex-1 overflow-y-auto px-3 pb-8">

@@ -1,14 +1,48 @@
 import { useEffect, useRef } from 'react'
-import { Check, Droplet, ArrowDownToLine, Trash2, MousePointer2, type LucideIcon } from 'lucide-react'
+import {
+  Check,
+  Droplet,
+  ArrowDownToLine,
+  Trash2,
+  Repeat,
+  Move,
+  Thermometer,
+  Waves,
+  Magnet,
+  Timer,
+  ScanLine,
+  ChevronsUp,
+  ChevronsDown,
+  Wind,
+  Power,
+  MessageSquare,
+  Hand,
+  type LucideIcon,
+} from 'lucide-react'
 import type { Protocol, StepKind } from '@/lib/protocol'
 import { cn } from '@/lib/utils'
 
 const ICON: Record<StepKind, LucideIcon> = {
-  pick_up_tip: MousePointer2,
+  pick_up_tip: Hand,
+  drop_tip: Trash2,
   aspirate: ArrowDownToLine,
   dispense: Droplet,
-  drop_tip: Trash2,
-  move: MousePointer2,
+  blow_out: Wind,
+  mix: Repeat,
+  move_labware: Move,
+  set_temperature: Thermometer,
+  wait_temperature: Thermometer,
+  deactivate: Power,
+  shake: Waves,
+  stop_shake: Waves,
+  engage_magnet: Magnet,
+  disengage_magnet: Magnet,
+  thermocycle: Repeat,
+  open_lid: ChevronsUp,
+  close_lid: ChevronsDown,
+  read_absorbance: ScanLine,
+  delay: Timer,
+  comment: MessageSquare,
 }
 
 export function RunLog({ protocol, index }: { protocol: Protocol; index: number }) {
@@ -20,22 +54,18 @@ export function RunLog({ protocol, index }: { protocol: Protocol; index: number 
   }, [index])
 
   return (
-    <div ref={ref} className="no-scrollbar flex h-full flex-col gap-0.5 overflow-y-auto p-1">
+    <div ref={ref} className="no-scrollbar flex h-full flex-col gap-0.5 overflow-y-auto p-1.5">
       {protocol.steps.map((s, i) => {
         const done = i < index
         const current = i === index
-        const Icon = ICON[s.kind]
+        const Icon = ICON[s.kind] ?? Droplet
         return (
           <div
             key={i}
             data-current={current}
             className={cn(
               'flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[12.5px] transition-colors',
-              current
-                ? 'bg-sage-500/12 text-sage-700'
-                : done
-                  ? 'text-faint'
-                  : 'text-muted',
+              current ? 'bg-sage-500/12 text-sage-700' : done ? 'text-faint' : 'text-muted',
             )}
           >
             <span

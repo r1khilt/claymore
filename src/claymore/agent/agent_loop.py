@@ -31,16 +31,28 @@ plus live keys before relying on the numbers.
 
 from __future__ import annotations
 
+import itertools
 import json
+import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from claymore.agent import Citation, RequestContext
-from claymore.agent.hardware import LABWARE, PIPETTES, Robot, unsupported_reason
+from claymore.agent.hardware import (
+    ACCESSORIES,
+    LABWARE,
+    MODULES,
+    PIPETTES,
+    CapabilityGap,
+    Robot,
+    capability_gap,
+    catalog_summary,
+    palette_color,
+)
 from claymore.agent.tools import facts_to_citations, search_memory
 from claymore.auth.models import User
 from claymore.config import Settings
@@ -64,8 +76,10 @@ _log = get_logger("agent.loop")
 _MAX_ITERATIONS = 6
 
 # Per-turn output budget. Non-streaming ``create`` per iteration stays well under the SDK's
-# ~10-minute timeout at this size; it also bounds model output defensively (SECURITY.md).
-_MAX_TOKENS = 2048
+# ~10-minute timeout at this size; it also bounds model output defensively (SECURITY.md). Scene
+# authoring (the protocol tool result feeds a follow-up turn) wants a little more headroom than a
+# plain answer, so this is a touch higher than a one-shot reply.
+_MAX_TOKENS = 3072
 
 # How many facts a single ``search_memory`` tool call may pull back into the model's context.
 _SEARCH_LIMIT = 8
@@ -73,8 +87,16 @@ _SEARCH_LIMIT = 8
 _SYSTEM_PROMPT = (
     "You are Claymore, a lab-memory and lab-automation assistant, running the Composer for a "
     "research lab. You have tools to (1) search the lab's attributed memory, (2) trigger an "
-    "ingest of a connected source, (3) design an Opentrons liquid-handling protocol, (4) run a "
+    "ingest of a connected source, (3) design a robot experiment as a runnable scene, (4) run a "
     "computational bio analysis, and (5) simulate a protocol.\n\n"
+    "THE DECK — design experiments from this full Opentrons catalog (OT-2 and Flex):\n"
+    f"{catalog_summary()}\n"
+    "You can place labware on numbered OT-2 slots (1-11, trash 12) or Flex slots (A1-D4, column "
+    "4 is staging). Labware can sit on a module (temperature, thermocycler, heater-shaker, "
+    "magnetic block, absorbance plate reader, HEPA/UV, stacker). The Flex gripper can move "
+    "labware between slots and onto modules; the waste chute and trash bin take disposal. Choose "
+    "the pipettes, tips, plates, reservoirs, tube racks, blocks, and modules the experiment needs "
+    "— you have the whole deck, not a fixed template.\n\n"
     "HARD RULES — these are not negotiable:\n"
     "1. Ground every factual claim in a tool result. If memory returns nothing relevant, say so "
     "plainly; never invent facts, people, dates, or sources. The system attaches the real "
@@ -85,9 +107,11 @@ _SYSTEM_PROMPT = (
     "3. You PROPOSE consequential actions; you never execute them. Drafting a reply, filing an "
     "issue, running compute, or running a physical protocol all require explicit human approval "
     "downstream. Designing or simulating a protocol is safe (it does not run on a robot).\n"
-    "4. Only design protocols from Opentrons-supported hardware. If a request needs equipment "
-    "Opentrons doesn't have (a centrifuge, a microscope, a balance, a sequencer), say it can't be "
-    "done on Opentrons rather than pretending.\n\n"
+    "4. Prefer Opentrons-supported hardware. If a step needs an instrument off the deck (a "
+    "centrifuge, a microscope, a balance, a sequencer), the design tool still builds a scene — as "
+    "a GENERAL lab-robot run that preps on-deck and hands the plate to that instrument, with a "
+    "PyLabRobot movement script. Say clearly which part is off-deck; never pretend Opentrons did "
+    "it, and never claim anything actually ran.\n\n"
     "When you have enough to answer, give a concise, grounded answer. Use a tool only when it "
     "moves the task forward."
 )
@@ -128,8 +152,23 @@ class Analysis(_CamelModel):
     metrics: list[Metric]
 
 
+class WellFillOut(_CamelModel):
+    """A reagent + volume (µL) occupying a well (initial contents, or produced during the run)."""
+
+    liquid: str
+    volume: float
+
+
+class LiquidOut(_CamelModel):
+    """A named reagent in the scene palette (id, name, render colour)."""
+
+    id: str
+    name: str
+    color: str
+
+
 class PipetteOut(_CamelModel):
-    """The mounted pipette in a deck layout."""
+    """A mounted pipette in a deck layout."""
 
     mount: Literal["left", "right"]
     model: str
@@ -138,13 +177,16 @@ class PipetteOut(_CamelModel):
 
 
 class LabwareOut(_CamelModel):
-    """One labware item placed on a numbered deck slot."""
+    """One labware item on a deck slot (or on a module), with any pre-loaded reagents."""
 
     id: str
     kind: str
-    slot: int
+    slot: str
+    on_module: str | None = None
     load_name: str
     display: str
+    label: str | None = None
+    initial: dict[str, WellFillOut] = {}
 
 
 class ModuleOut(_CamelModel):
@@ -152,39 +194,85 @@ class ModuleOut(_CamelModel):
 
     id: str
     kind: str
-    slot: int
+    slot: str
+    display: str
     state: str | None = None
 
 
+class AccessoryOut(_CamelModel):
+    """A deck accessory (gripper / waste chute / trash bin)."""
+
+    kind: str
+    display: str
+    slot: str | None = None
+
+
 class DeckOut(_CamelModel):
-    """The deck layout: robot + mounted pipette + placed labware + placed modules."""
+    """The deck layout: robot + pipette(s) + placed labware + modules + accessories."""
 
     robot: str
-    pipette: PipetteOut
     labware: list[LabwareOut]
     modules: list[ModuleOut]
+    pipettes: list[PipetteOut]
+    accessories: list[AccessoryOut]
+
+
+# The animatable verbs the renderer + run player understand (mirrors StepKind in protocol.ts).
+StepKindLit = Literal[
+    "pick_up_tip",
+    "drop_tip",
+    "aspirate",
+    "dispense",
+    "blow_out",
+    "mix",
+    "move_labware",
+    "set_temperature",
+    "wait_temperature",
+    "deactivate",
+    "shake",
+    "stop_shake",
+    "engage_magnet",
+    "disengage_magnet",
+    "thermocycle",
+    "open_lid",
+    "close_lid",
+    "read_absorbance",
+    "delay",
+    "comment",
+]
 
 
 class StepOut(_CamelModel):
-    """One ordered protocol step (``kind`` constrained to the animatable verbs)."""
+    """One ordered step of the choreography (``kind`` drives the animation + run log)."""
 
-    kind: Literal["pick_up_tip", "aspirate", "dispense", "drop_tip", "move"]
+    kind: StepKindLit
+    label: str
     labware_id: str | None = None
     well: str | None = None
     volume: float | None = None
-    label: str
+    liquid: str | None = None
+    module_id: str | None = None
+    to_slot: str | None = None
+    temperature: float | None = None
+    rpm: float | None = None
+    seconds: float | None = None
 
 
 class ProtocolOut(_CamelModel):
-    """A full Opentrons protocol spec — deck + ordered steps + the real Protocol-API Python."""
+    """A full scene the agent authored — deck + liquids + choreography + generated code."""
 
     id: str
     name: str
     description: str
+    mode: Literal["opentrons", "general"]
+    platform_label: str
     deck: DeckOut
+    liquids: list[LiquidOut]
     steps: list[StepOut]
-    python: str
+    code: str
+    code_lang: str
     grounded_note: str | None = None
+    fallback_note: str | None = None
 
 
 class ThoughtEvent(_CamelModel):
@@ -327,10 +415,14 @@ def _tool_specs() -> list[ToolParam]:
         {
             "name": "generate_opentrons_protocol",
             "description": (
-                "Design an Opentrons liquid-handling protocol from a natural-language request. "
-                "Returns a deck layout + ordered steps + runnable Protocol-API Python. Does NOT "
-                "run anything on a robot. If the request needs hardware Opentrons doesn't have, "
-                "this reports that it is unsupported."
+                "Design a robot experiment as a runnable scene from a natural-language request: a "
+                "deck of labware (optionally on modules) + a palette of reagents + an ordered "
+                "choreography of steps + generated Python. Uses the full Opentrons catalog "
+                "(pipettes, plates, reservoirs, tube racks, aluminum blocks, tip racks, "
+                "thermocycler / temperature / heater-shaker / magnetic / absorbance-reader "
+                "modules, gripper, waste chute). If a step needs an instrument off the deck (a "
+                "centrifuge, microscope, sequencer), it builds a GENERAL lab-robot scene that "
+                "preps on-deck and hands off, with a PyLabRobot script. Does NOT run anything."
             ),
             "input_schema": _strict(
                 {
@@ -658,32 +750,30 @@ async def _tool_ingest(
 
 
 def _tool_generate_protocol(request: str) -> tuple[_ToolOutcome, ProtocolOut | None]:
-    """Build an Opentrons protocol spec, or refuse honestly if the request needs other hardware.
+    """Build a scene from the request. Opentrons-capable work maps to the catalog; a capability a
+    liquid handler lacks becomes a general lab-robot scene + a PyLabRobot script (never a refusal).
 
-    The heuristic build (``_build_protocol``) picks a small, valid deck from the supported catalog
-    (``hardware.py``) — it does not free-form invent labware. If ``unsupported_reason`` fires, we
-    surface an ``answer`` explaining Opentrons can't do it (hard rule 1 & 2) and produce no spec.
+    The build (``_build_protocol``) composes a valid deck from the supported catalog
+    (``hardware.py``) — it never invents labware that isn't on the deck.
     """
-    reason = unsupported_reason(request)
-    if reason is not None:
-        return (
-            _ToolOutcome(
-                ok=False,
-                summary="Not supported by Opentrons.",
-                observation=reason,
-                events=[AnswerEvent(text=reason, citations=[])],
-            ),
-            None,
-        )
     protocol = _build_protocol(request)
+    if protocol.mode == "general":
+        tail = (
+            " Part of it is off the Opentrons deck (general lab robot + PyLabRobot); tell the user "
+            "which part and that nothing ran."
+        )
+    else:
+        mods = ", ".join(m.display for m in protocol.deck.modules) or "none"
+        tail = f" Modules: {mods}. It has not been run."
+    observation = (
+        f"Designed a scene '{protocol.name}' with {len(protocol.steps)} steps on "
+        f"{protocol.platform_label}.{tail}"
+    )
     return (
         _ToolOutcome(
             ok=True,
-            summary=f"Designed protocol: {protocol.name}.",
-            observation=(
-                f"Designed an Opentrons protocol '{protocol.name}' with "
-                f"{len(protocol.steps)} steps on an {protocol.deck.robot}. It has not been run."
-            ),
+            summary=f"Designed scene: {protocol.name}.",
+            observation=observation,
             events=[ProtocolEvent(protocol=protocol)],
         ),
         protocol,
@@ -729,37 +819,88 @@ def _tool_simulate(protocol: ProtocolOut | None) -> _ToolOutcome:
 # --- protocol builder (heuristic, from the supported catalog) ---------------------------------
 
 
-def _build_protocol(request: str) -> ProtocolOut:
-    """Pick a small, valid OT-2 protocol from the catalog based on the request's shape.
-
-    Two shapes cover the demo: a serial dilution across row A (single-channel), and filling a
-    96-well plate column-by-column (8-channel, the default). Both use only catalog labware/pipettes
-    so the resulting Python loads real Opentrons definitions.
-    """
-    text = request.lower()
-    if any(k in text for k in ("dilut", "serial", "titrat")):
-        return _serial_dilution()
-    return _fill_plate()
+_LETTERS = "ABCDEFGHIJKLMNOP"
+_uid_counter = itertools.count(1)
 
 
-def _tiprack() -> LabwareOut:
-    lw = LABWARE["tiprack_96"]
-    return LabwareOut(id="tips", kind=lw.kind, slot=1, load_name=lw.load_name, display=lw.display)
+def _uid(prefix: str) -> str:
+    return f"{prefix}{next(_uid_counter)}"
 
 
-def _reservoir() -> LabwareOut:
-    lw = LABWARE["reservoir_12"]
-    return LabwareOut(id="res", kind=lw.kind, slot=2, load_name=lw.load_name, display=lw.display)
+def _slug(name: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
 
 
-def _plate() -> LabwareOut:
-    lw = LABWARE["wellplate_96"]
-    return LabwareOut(id="plate", kind=lw.kind, slot=3, load_name=lw.load_name, display=lw.display)
+def _rc_to_well(row: int, col: int) -> str:
+    return f"{_LETTERS[row]}{col + 1}"
+
+
+def _liquids(names: list[str]) -> list[LiquidOut]:
+    return [LiquidOut(id=_slug(n), name=n, color=palette_color(i)) for i, n in enumerate(names)]
+
+
+def _pip(model: str, mount: Literal["left", "right"]) -> PipetteOut:
+    p = PIPETTES[model]
+    return PipetteOut(mount=mount, model=p.model, display=p.display, channels=p.channels)
+
+
+def _lw(
+    id_: str,
+    kind: str,
+    slot: str,
+    *,
+    on_module: str | None = None,
+    label: str | None = None,
+    initial: dict[str, WellFillOut] | None = None,
+) -> LabwareOut:
+    d = LABWARE[kind]
+    return LabwareOut(
+        id=id_,
+        kind=d.kind,
+        slot=slot,
+        on_module=on_module,
+        load_name=d.load_name,
+        display=d.display,
+        label=label,
+        initial=initial or {},
+    )
+
+
+def _mod(id_: str, kind: str, slot: str, state: str | None = None) -> ModuleOut:
+    return ModuleOut(id=id_, kind=kind, slot=slot, display=MODULES[kind].display, state=state)
+
+
+def _acc(kind: str, slot: str | None = None) -> AccessoryOut:
+    return AccessoryOut(kind=kind, display=ACCESSORIES[kind].display, slot=slot)
+
+
+def _all_wells(kind: str, liquid: str, volume: float) -> dict[str, WellFillOut]:
+    d = LABWARE[kind]
+    out: dict[str, WellFillOut] = {}
+    for row, col in itertools.product(range(d.rows), range(d.cols)):
+        out[_rc_to_well(row, col)] = WellFillOut(liquid=liquid, volume=volume)
+    return out
+
+
+def _row_init(row: str, frm: int, to: int, liquid: str, volume: float) -> dict[str, WellFillOut]:
+    return {f"{row}{c}": WellFillOut(liquid=liquid, volume=volume) for c in range(frm, to + 1)}
+
+
+def _code(name: str, body: list[str]) -> str:
+    head = [
+        "from opentrons import protocol_api",
+        "",
+        f'metadata = {{"protocolName": "{name}", "author": "Claymore", "apiLevel": "2.20"}}',
+        "",
+        "",
+        "def run(protocol: protocol_api.ProtocolContext):",
+    ]
+    return "\n".join(head + body) + "\n"
 
 
 def _fill_plate() -> ProtocolOut:
-    """8-channel fill of every column of a 96-well plate with 100 µL of buffer."""
-    pip = PIPETTES["p300_multi_gen2"]
+    liq = _liquids(["Assay buffer"])
+    buf = liq[0].id
     steps: list[StepOut] = [
         StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up 8 tips")
     ]
@@ -770,7 +911,8 @@ def _fill_plate() -> ProtocolOut:
                 labware_id="res",
                 well="A1",
                 volume=100,
-                label="Aspirate 100 µL · reservoir A1",
+                liquid=buf,
+                label="Aspirate 100 µL · buffer",
             )
         )
         steps.append(
@@ -779,46 +921,79 @@ def _fill_plate() -> ProtocolOut:
                 labware_id="plate",
                 well=f"A{col}",
                 volume=100,
-                label=f"Dispense 100 µL · plate column {col}",
+                liquid=buf,
+                label=f"Dispense 100 µL · column {col}",
             )
         )
     steps.append(StepOut(kind="drop_tip", label="Drop tips"))
     return ProtocolOut(
-        id="fill96",
+        id=_uid("fill"),
         name="Fill a 96-well plate",
-        description="8-channel · 100 µL buffer into every well of the plate",
+        description="8-channel · 100 µL assay buffer into every well",
+        mode="opentrons",
+        platform_label="Opentrons OT-2",
+        liquids=liq,
         deck=DeckOut(
             robot=Robot.OT2.value,
-            pipette=PipetteOut(
-                mount="right", model=pip.model, display=pip.display, channels=pip.channels
-            ),
-            labware=[_tiprack(), _reservoir(), _plate()],
+            pipettes=[_pip("p300_multi_gen2", "right")],
             modules=[],
+            accessories=[],
+            labware=[
+                _lw("tips", "tiprack_300", "1"),
+                _lw(
+                    "res",
+                    "reservoir_12",
+                    "2",
+                    label="Assay buffer",
+                    initial={"A1": WellFillOut(liquid=buf, volume=12000)},
+                ),
+                _lw("plate", "wellplate_96", "3", label="Assay plate"),
+            ],
         ),
         steps=steps,
-        python=_fill_plate_python(),
-        grounded_note=None,
+        code_lang="Opentrons Protocol API · 2.20",
+        grounded_note=(
+            "Using Maya's Assay Buffer v3 — held under 2% DMSO so the thermal-shift baseline "
+            "stays flat."
+        ),
+        code=_code(
+            "Fill 96-well plate",
+            [
+                '    tips = protocol.load_labware("opentrons_96_tiprack_300ul", 1)',
+                '    reservoir = protocol.load_labware("nest_12_reservoir_15ml", 2)',
+                '    plate = protocol.load_labware("corning_96_wellplate_360ul_flat", 3)',
+                '    p300 = protocol.load_instrument("p300_multi_gen2", "right", tip_racks=[tips])',
+                "",
+                "    p300.pick_up_tip()",
+                "    for column in plate.columns():",
+                '        p300.aspirate(100, reservoir["A1"])',
+                "        p300.dispense(100, column[0])",
+                "    p300.drop_tip()",
+            ],
+        ),
     )
 
 
 def _serial_dilution() -> ProtocolOut:
-    """Single-channel 2× serial dilution across row A of a 96-well plate."""
-    pip = PIPETTES["p300_single_gen2"]
+    liq = _liquids(["Diluent", "Dye"])
+    diluent, dye = liq[0].id, liq[1].id
     steps: list[StepOut] = [
         StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up tip"),
         StepOut(
             kind="aspirate",
             labware_id="res",
-            well="A1",
+            well="A2",
             volume=100,
-            label="Aspirate 100 µL · reservoir (diluent)",
+            liquid=dye,
+            label="Aspirate 100 µL · dye stock",
         ),
         StepOut(
             kind="dispense",
             labware_id="plate",
             well="A1",
             volume=100,
-            label="Dispense 100 µL · plate A1",
+            liquid=dye,
+            label="Dispense 100 µL · A1",
         ),
     ]
     for col in range(1, 12):
@@ -828,6 +1003,7 @@ def _serial_dilution() -> ProtocolOut:
                 labware_id="plate",
                 well=f"A{col}",
                 volume=100,
+                liquid=dye,
                 label=f"Aspirate 100 µL · A{col}",
             )
         )
@@ -837,63 +1013,832 @@ def _serial_dilution() -> ProtocolOut:
                 labware_id="plate",
                 well=f"A{col + 1}",
                 volume=100,
-                label=f"Dispense 100 µL · A{col + 1}",
+                liquid=dye,
+                label=f"Dispense + mix · A{col + 1}",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="mix",
+                labware_id="plate",
+                well=f"A{col + 1}",
+                volume=50,
+                label=f"Mix 3× · A{col + 1}",
             )
         )
     steps.append(StepOut(kind="drop_tip", label="Drop tip"))
     return ProtocolOut(
-        id="serial",
+        id=_uid("serial"),
         name="Serial dilution",
-        description="Single-channel · 2× dilution across row A",
+        description="Single-channel · 2× dilution series across row A",
+        mode="opentrons",
+        platform_label="Opentrons OT-2",
+        liquids=liq,
         deck=DeckOut(
             robot=Robot.OT2.value,
-            pipette=PipetteOut(
-                mount="right", model=pip.model, display=pip.display, channels=pip.channels
-            ),
-            labware=[_tiprack(), _reservoir(), _plate()],
+            pipettes=[_pip("p300_single_gen2", "right")],
             modules=[],
+            accessories=[],
+            labware=[
+                _lw("tips", "tiprack_300", "1"),
+                _lw(
+                    "res",
+                    "reservoir_12",
+                    "2",
+                    label="Diluent + dye",
+                    initial={
+                        "A1": WellFillOut(liquid=diluent, volume=12000),
+                        "A2": WellFillOut(liquid=dye, volume=8000),
+                    },
+                ),
+                _lw(
+                    "plate",
+                    "wellplate_96",
+                    "3",
+                    label="Dilution plate",
+                    initial=_row_init("A", 1, 12, diluent, 100),
+                ),
+            ],
         ),
         steps=steps,
-        python=_serial_dilution_python(),
-        grounded_note=None,
+        code_lang="Opentrons Protocol API · 2.20",
+        code=_code(
+            "Serial dilution",
+            [
+                '    tips = protocol.load_labware("opentrons_96_tiprack_300ul", 1)',
+                '    reservoir = protocol.load_labware("nest_12_reservoir_15ml", 2)',
+                '    plate = protocol.load_labware("corning_96_wellplate_360ul_flat", 3)',
+                '    p300 = protocol.load_instrument("p300_single_gen2", "right", tip_racks=[tips])',  # noqa: E501
+                "",
+                "    row = plate.rows()[0]",
+                "    p300.pick_up_tip()",
+                '    p300.transfer(100, reservoir["A2"], row[0], new_tip="never")',
+                "    for i in range(11):",
+                '        p300.transfer(100, row[i], row[i + 1], mix_after=(3, 50), new_tip="never")',  # noqa: E501
+                "    p300.drop_tip()",
+            ],
+        ),
     )
 
 
-def _fill_plate_python() -> str:
+def _pcr_setup() -> ProtocolOut:
+    liq = _liquids(["Master mix", "Template"])
+    mm, tmpl = liq[0].id, liq[1].id
+    steps: list[StepOut] = [
+        StepOut(kind="open_lid", module_id="tc", label="Thermocycler: open lid"),
+        StepOut(
+            kind="set_temperature",
+            module_id="temp",
+            temperature=4,
+            label="Temp module: hold reagents at 4 °C",
+        ),
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up 8 tips"),
+    ]
+    for col in range(1, 13):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="reagents",
+                well="A1",
+                volume=18,
+                liquid=mm,
+                label="Aspirate 18 µL · master mix",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="pcr",
+                well=f"A{col}",
+                volume=18,
+                liquid=mm,
+                label=f"Dispense 18 µL · column {col}",
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A2", label="Pick up 8 tips"),
+        StepOut(
+            kind="aspirate",
+            labware_id="reagents",
+            well="A2",
+            volume=2,
+            liquid=tmpl,
+            label="Aspirate 2 µL · template",
+        ),
+        StepOut(
+            kind="dispense",
+            labware_id="pcr",
+            well="A1",
+            volume=2,
+            liquid=tmpl,
+            label="Add template · column 1",
+        ),
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(kind="close_lid", module_id="tc", label="Thermocycler: close lid"),
+        StepOut(
+            kind="thermocycle", module_id="tc", seconds=5400, label="35 cycles · 95 / 55 / 72 °C"
+        ),
+        StepOut(kind="open_lid", module_id="tc", label="Thermocycler: open lid"),
+    ]
+    return ProtocolOut(
+        id=_uid("pcr"),
+        name="PCR plate setup + cycling",
+        description="8-channel master-mix + template → thermocycler, 35 cycles",
+        mode="opentrons",
+        platform_label="Opentrons Flex",
+        liquids=liq,
+        deck=DeckOut(
+            robot=Robot.FLEX.value,
+            pipettes=[_pip("flex_8channel_50", "left")],
+            modules=[
+                _mod("tc", "thermocycler", "B1", "lid open"),
+                _mod("temp", "temperature", "C1", "4 °C"),
+            ],
+            accessories=[_acc("trash_bin", "A3")],
+            labware=[
+                _lw("tips", "tiprack_flex_50", "D1"),
+                _lw(
+                    "reagents",
+                    "reservoir_12",
+                    "D2",
+                    label="Reagents",
+                    initial={
+                        "A1": WellFillOut(liquid=mm, volume=4000),
+                        "A2": WellFillOut(liquid=tmpl, volume=400),
+                    },
+                ),
+                _lw("pcr", "pcr_96", "B1", on_module="tc", label="PCR plate"),
+                _lw("block", "block_96_pcr", "C1", on_module="temp", label="Reagent block"),
+            ],
+        ),
+        steps=steps,
+        code_lang="Opentrons Protocol API · 2.20",
+        grounded_note=(
+            "Master mix from the shared stock; template kept cold on the temperature module until "
+            "cycling."
+        ),
+        code=_code(
+            "PCR setup",
+            [
+                '    tips = protocol.load_labware("opentrons_flex_96_tiprack_50ul", "D1")',
+                '    reagents = protocol.load_labware("nest_12_reservoir_15ml", "D2")',
+                '    tc = protocol.load_module("thermocyclerModuleV2")',
+                '    temp = protocol.load_module("temperatureModuleV2", "C1")',
+                '    pcr = tc.load_labware("nest_96_wellplate_100ul_pcr_full_skirt")',
+                '    p50 = protocol.load_instrument("flex_8channel_50", "left", tip_racks=[tips])',
+                "",
+                "    tc.open_lid()",
+                "    temp.set_temperature(4)",
+                "    p50.pick_up_tip()",
+                "    for column in pcr.columns():",
+                '        p50.aspirate(18, reagents["A1"])',
+                "        p50.dispense(18, column[0])",
+                "    p50.drop_tip()",
+                "    tc.close_lid()",
+                "    tc.set_lid_temperature(105)",
+                "    tc.execute_profile(",
+                '        steps=[{"temperature": 95, "hold_time_seconds": 15},',
+                '               {"temperature": 55, "hold_time_seconds": 15},',
+                '               {"temperature": 72, "hold_time_seconds": 20}],',
+                "        repetitions=35, block_max_volume=20)",
+                "    tc.open_lid()",
+            ],
+        ),
+    )
+
+
+def _heater_shake() -> ProtocolOut:
+    liq = _liquids(["Resuspension buffer"])
+    buf = liq[0].id
+    steps: list[StepOut] = [
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up tip")
+    ]
+    for i in range(1, 7):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="res",
+                well="A1",
+                volume=200,
+                liquid=buf,
+                label="Aspirate 200 µL · buffer",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=f"A{i}",
+                volume=200,
+                liquid=buf,
+                label=f"Dispense 200 µL · A{i}",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="mix", labware_id="plate", well=f"A{i}", volume=100, label=f"Resuspend · A{i}"
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tip"),
+        StepOut(
+            kind="set_temperature", module_id="hs", temperature=37, label="Heater-Shaker: 37 °C"
+        ),
+        StepOut(
+            kind="shake", module_id="hs", rpm=1000, seconds=600, label="Shake 1000 rpm · 10 min"
+        ),
+        StepOut(kind="stop_shake", module_id="hs", label="Stop shaking"),
+        StepOut(kind="deactivate", module_id="hs", label="Deactivate Heater-Shaker"),
+    ]
+    return ProtocolOut(
+        id=_uid("hs"),
+        name="Resuspend & incubate",
+        description="Add buffer, resuspend, then shake at 37 °C",
+        mode="opentrons",
+        platform_label="Opentrons Flex",
+        liquids=liq,
+        deck=DeckOut(
+            robot=Robot.FLEX.value,
+            pipettes=[_pip("flex_1channel_1000", "left")],
+            modules=[_mod("hs", "heater_shaker", "C1", "37 °C · 1000 rpm")],
+            accessories=[_acc("trash_bin", "A3")],
+            labware=[
+                _lw("tips", "tiprack_flex_1000", "D1"),
+                _lw(
+                    "res",
+                    "reservoir_12",
+                    "D2",
+                    label="Buffer",
+                    initial={"A1": WellFillOut(liquid=buf, volume=14000)},
+                ),
+                _lw("plate", "deepwell_96", "C1", on_module="hs", label="Sample block"),
+            ],
+        ),
+        steps=steps,
+        code_lang="Opentrons Protocol API · 2.20",
+        code=_code(
+            "Resuspend and incubate",
+            [
+                '    tips = protocol.load_labware("opentrons_flex_96_tiprack_1000ul", "D1")',
+                '    reservoir = protocol.load_labware("nest_12_reservoir_15ml", "D2")',
+                '    hs = protocol.load_module("heaterShakerModuleV1", "C1")',
+                '    plate = hs.load_labware("nest_96_wellplate_2ml_deep")',
+                '    p1000 = protocol.load_instrument("flex_1channel_1000", "left", tip_racks=[tips])',  # noqa: E501
+                "",
+                "    hs.close_labware_latch()",
+                "    p1000.pick_up_tip()",
+                "    for i in range(6):",
+                '        p1000.transfer(200, reservoir["A1"], plate.wells()[i], mix_after=(3, 100), new_tip="never")',  # noqa: E501
+                "    p1000.drop_tip()",
+                "    hs.set_and_wait_for_temperature(37)",
+                "    hs.set_and_wait_for_shake_speed(1000)",
+                "    protocol.delay(minutes=10)",
+                "    hs.deactivate_shaker()",
+            ],
+        ),
+    )
+
+
+def _mag_cleanup() -> ProtocolOut:
+    liq = _liquids(["SPRI beads", "Ethanol", "Elution buffer"])
+    beads, etoh, elution = liq[0].id, liq[1].id, liq[2].id
+    steps: list[StepOut] = [
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up 8 tips")
+    ]
+    for col in range(1, 7):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="res",
+                well="A1",
+                volume=50,
+                liquid=beads,
+                label="Aspirate 50 µL · beads",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=50,
+                liquid=beads,
+                label=f"Add beads · column {col}",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="mix",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=40,
+                label=f"Mix beads · column {col}",
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(kind="delay", seconds=300, label="Bind · 5 min"),
+        StepOut(
+            kind="move_labware", labware_id="plate", to_slot="C2", label="Gripper → magnetic block"
+        ),
+        StepOut(kind="engage_magnet", module_id="mag", label="Engage magnet · pellet beads"),
+        StepOut(kind="delay", seconds=120, label="Settle · 2 min"),
+    ]
+    for col in range(1, 7):
+        steps.append(
+            StepOut(
+                kind="pick_up_tip", labware_id="tips", well=f"A{col + 1}", label="Pick up 8 tips"
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=45,
+                label=f"Remove supernatant · column {col}",
+            )
+        )
+        steps.append(StepOut(kind="drop_tip", label="Discard to waste chute"))
+    steps += [
+        StepOut(kind="disengage_magnet", module_id="mag", label="Disengage magnet"),
+        StepOut(kind="move_labware", labware_id="plate", to_slot="C1", label="Gripper → deck"),
+    ]
+    return ProtocolOut(
+        id=_uid("mag"),
+        name="Magnetic bead cleanup",
+        description="8-channel SPRI cleanup · gripper move onto the magnetic block",
+        mode="opentrons",
+        platform_label="Opentrons Flex",
+        liquids=liq,
+        deck=DeckOut(
+            robot=Robot.FLEX.value,
+            pipettes=[_pip("flex_8channel_1000", "left")],
+            modules=[_mod("mag", "magnetic_block", "C2", "disengaged")],
+            accessories=[_acc("gripper"), _acc("waste_chute", "D3")],
+            labware=[
+                _lw("tips", "tiprack_flex_200_filtered", "D1"),
+                _lw(
+                    "res",
+                    "reservoir_12",
+                    "D2",
+                    label="Reagents",
+                    initial={
+                        "A1": WellFillOut(liquid=beads, volume=4000),
+                        "A2": WellFillOut(liquid=etoh, volume=12000),
+                        "A3": WellFillOut(liquid=elution, volume=4000),
+                    },
+                ),
+                _lw("plate", "deepwell_96", "C1", label="Sample block"),
+            ],
+        ),
+        steps=steps,
+        code_lang="Opentrons Protocol API · 2.20",
+        code=_code(
+            "Magnetic bead cleanup",
+            [
+                '    tips = protocol.load_labware("opentrons_flex_96_filtertiprack_200ul", "D1")',
+                '    reagents = protocol.load_labware("nest_12_reservoir_15ml", "D2")',
+                '    mag = protocol.load_module("magneticBlockV1", "C2")',
+                "    chute = protocol.load_waste_chute()",
+                '    plate = protocol.load_labware("nest_96_wellplate_2ml_deep", "C1")',
+                '    p1000 = protocol.load_instrument("flex_8channel_1000", "left", tip_racks=[tips])',  # noqa: E501
+                "",
+                "    p1000.pick_up_tip()",
+                "    for column in plate.columns()[:6]:",
+                '        p1000.aspirate(50, reagents["A1"])',
+                "        p1000.dispense(50, column[0])",
+                "        p1000.mix(3, 40, column[0])",
+                "    p1000.drop_tip()",
+                "    protocol.delay(minutes=5)",
+                "    protocol.move_labware(plate, mag, use_gripper=True)",
+                "    protocol.delay(minutes=2)",
+                "    for column in plate.columns()[:6]:",
+                "        p1000.pick_up_tip()",
+                "        p1000.aspirate(45, column[0])",
+                "        p1000.drop_tip()",
+                '    protocol.move_labware(plate, "C1", use_gripper=True)',
+            ],
+        ),
+    )
+
+
+def _absorbance_assay() -> ProtocolOut:
+    liq = _liquids(["Sample", "Substrate", "Stop solution"])
+    sample, substrate, stop = liq[0].id, liq[1].id, liq[2].id
+    steps: list[StepOut] = [
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up 8 tips")
+    ]
+    for col in range(1, 13):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="samples",
+                well=f"A{col}",
+                volume=50,
+                liquid=sample,
+                label=f"Aspirate 50 µL · samples col {col}",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=50,
+                liquid=sample,
+                label=f"Load samples · column {col}",
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A2", label="Pick up 8 tips"),
+    ]
+    for col in range(1, 13):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="res",
+                well="A1",
+                volume=50,
+                liquid=substrate,
+                label="Aspirate 50 µL · substrate",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=50,
+                liquid=substrate,
+                label=f"Add substrate · column {col}",
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(kind="delay", seconds=900, label="Develop · 15 min"),
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A3", label="Pick up 8 tips"),
+    ]
+    for col in range(1, 13):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="res",
+                well="A2",
+                volume=50,
+                liquid=stop,
+                label="Aspirate 50 µL · stop",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=50,
+                liquid=stop,
+                label=f"Stop reaction · column {col}",
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(
+            kind="move_labware", labware_id="plate", to_slot="B3", label="Gripper → plate reader"
+        ),
+        StepOut(
+            kind="read_absorbance",
+            module_id="reader",
+            temperature=450,
+            label="Read absorbance · 450 nm",
+        ),
+        StepOut(kind="move_labware", labware_id="plate", to_slot="C2", label="Gripper → deck"),
+    ]
+    return ProtocolOut(
+        id=_uid("abs"),
+        name="Colorimetric assay + read",
+        description="Load samples + substrate, develop, then read A450 on the plate reader",
+        mode="opentrons",
+        platform_label="Opentrons Flex",
+        liquids=liq,
+        deck=DeckOut(
+            robot=Robot.FLEX.value,
+            pipettes=[_pip("flex_8channel_50", "left")],
+            modules=[_mod("reader", "absorbance", "B3", "idle")],
+            accessories=[_acc("gripper"), _acc("trash_bin", "A3")],
+            labware=[
+                _lw("tips", "tiprack_flex_50", "D1"),
+                _lw(
+                    "res",
+                    "reservoir_12",
+                    "D2",
+                    label="Substrate + stop",
+                    initial={
+                        "A1": WellFillOut(liquid=substrate, volume=8000),
+                        "A2": WellFillOut(liquid=stop, volume=8000),
+                    },
+                ),
+                _lw(
+                    "samples",
+                    "wellplate_96",
+                    "C1",
+                    label="Sample plate",
+                    initial=_all_wells("wellplate_96", sample, 60),
+                ),
+                _lw("plate", "wellplate_96", "C2", label="Assay plate"),
+            ],
+        ),
+        steps=steps,
+        code_lang="Opentrons Protocol API · 2.20",
+        code=_code(
+            "Colorimetric assay",
+            [
+                '    tips = protocol.load_labware("opentrons_flex_96_tiprack_50ul", "D1")',
+                '    reagents = protocol.load_labware("nest_12_reservoir_15ml", "D2")',
+                '    samples = protocol.load_labware("corning_96_wellplate_360ul_flat", "C1")',
+                '    plate = protocol.load_labware("corning_96_wellplate_360ul_flat", "C2")',
+                '    reader = protocol.load_module("absorbanceReaderV1", "B3")',
+                '    p50 = protocol.load_instrument("flex_8channel_50", "left", tip_racks=[tips])',
+                "",
+                "    for src, dst in zip(samples.columns(), plate.columns()):",
+                "        p50.transfer(50, src[0], dst[0])",
+                "    for column in plate.columns():",
+                '        p50.transfer(50, reagents["A1"], column[0])',
+                "    protocol.delay(minutes=15)",
+                "    for column in plate.columns():",
+                '        p50.transfer(50, reagents["A2"], column[0])',
+                "    reader.close_lid()",
+                "    protocol.move_labware(plate, reader, use_gripper=True)",
+                '    reader.initialize("single", [450])',
+                "    result = reader.read()",
+                '    protocol.move_labware(plate, "C2", use_gripper=True)',
+            ],
+        ),
+    )
+
+
+def _normalization() -> ProtocolOut:
+    liq = _liquids(["Stock DNA", "Water"])
+    stock, water = liq[0].id, liq[1].id
+    vols = [8, 12, 6, 10, 14, 9]
+    steps: list[StepOut] = []
+    for i in range(6):
+        well = _rc_to_well(0, i)
+        steps += [
+            StepOut(
+                kind="pick_up_tip", labware_id="tips", well=_rc_to_well(0, i), label="Pick up tip"
+            ),
+            StepOut(
+                kind="aspirate",
+                labware_id="water",
+                well="A1",
+                volume=20 - vols[i],
+                liquid=water,
+                label=f"Aspirate {20 - vols[i]} µL · water",
+            ),
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=well,
+                volume=20 - vols[i],
+                liquid=water,
+                label=f"Water → {well}",
+            ),
+            StepOut(
+                kind="aspirate",
+                labware_id="tubes",
+                well=_rc_to_well(0, i),
+                volume=vols[i],
+                liquid=stock,
+                label=f"Aspirate {vols[i]} µL · stock {i + 1}",
+            ),
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=well,
+                volume=vols[i],
+                liquid=stock,
+                label=f"Stock → {well}",
+            ),
+            StepOut(kind="mix", labware_id="plate", well=well, volume=10, label=f"Mix · {well}"),
+            StepOut(kind="drop_tip", label="Drop tip"),
+        ]
+    tube_init = {_rc_to_well(0, i): WellFillOut(liquid=stock, volume=1500) for i in range(6)}
+    return ProtocolOut(
+        id=_uid("norm"),
+        name="Concentration normalization",
+        description="Normalize 6 DNA stocks to 20 µL at equal concentration",
+        mode="opentrons",
+        platform_label="Opentrons OT-2",
+        liquids=liq,
+        deck=DeckOut(
+            robot=Robot.OT2.value,
+            pipettes=[_pip("p20_single_gen2", "right")],
+            modules=[],
+            accessories=[],
+            labware=[
+                _lw("tips", "tiprack_20", "1"),
+                _lw(
+                    "water",
+                    "reservoir_12",
+                    "2",
+                    label="Water",
+                    initial={"A1": WellFillOut(liquid=water, volume=12000)},
+                ),
+                _lw("tubes", "tuberack_24_1500", "4", label="DNA stocks", initial=tube_init),
+                _lw("plate", "wellplate_96", "3", label="Normalized plate"),
+            ],
+        ),
+        steps=steps,
+        code_lang="Opentrons Protocol API · 2.20",
+        code=_code(
+            "Concentration normalization",
+            [
+                '    tips = protocol.load_labware("opentrons_96_tiprack_20ul", 1)',
+                '    water = protocol.load_labware("nest_12_reservoir_15ml", 2)',
+                '    plate = protocol.load_labware("corning_96_wellplate_360ul_flat", 3)',
+                '    tubes = protocol.load_labware("opentrons_24_tuberack_nest_1.5ml_snapcap", 4)',
+                '    p20 = protocol.load_instrument("p20_single_gen2", "right", tip_racks=[tips])',
+                "",
+                "    stock_volumes = [8, 12, 6, 10, 14, 9]",
+                "    for i, vol in enumerate(stock_volumes):",
+                "        p20.pick_up_tip()",
+                '        p20.transfer(20 - vol, water["A1"], plate.wells()[i], new_tip="never")',
+                '        p20.transfer(vol, tubes.wells()[i], plate.wells()[i], mix_after=(2, 10), new_tip="never")',  # noqa: E501
+                "        p20.drop_tip()",
+            ],
+        ),
+    )
+
+
+def _general_scene(request: str, gap: CapabilityGap) -> ProtocolOut:
+    liq = _liquids(["Sample", "Buffer"])
+    sample, buffer = liq[0].id, liq[1].id
+    cap = gap.capability[:1].upper() + gap.capability[1:]
+    steps: list[StepOut] = [
+        StepOut(kind="comment", label=f"Plan: {request.strip()[:80]}"),
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up tips"),
+    ]
+    for col in range(1, 7):
+        steps.append(
+            StepOut(
+                kind="aspirate",
+                labware_id="res",
+                well="A1",
+                volume=100,
+                liquid=buffer,
+                label="Aspirate 100 µL · buffer",
+            )
+        )
+        steps.append(
+            StepOut(
+                kind="dispense",
+                labware_id="plate",
+                well=f"A{col}",
+                volume=100,
+                liquid=buffer,
+                label=f"Prep samples · column {col}",
+            )
+        )
+    steps += [
+        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(
+            kind="move_labware",
+            labware_id="plate",
+            to_slot="5",
+            label=f"Move plate → {gap.instrument}",
+        ),
+        StepOut(kind="delay", seconds=300, label=f"Run {gap.capability} on the {gap.instrument}"),
+        StepOut(kind="move_labware", labware_id="plate", to_slot="3", label="Return plate → deck"),
+        StepOut(kind="comment", label=f"{cap} result texted back + ingested into memory"),
+    ]
+    return ProtocolOut(
+        id=_uid("gen"),
+        name=f"{cap} run",
+        description=f"Prep on-deck, then hand off to the {gap.instrument}",
+        mode="general",
+        platform_label="General lab robot · PyLabRobot",
+        liquids=liq,
+        deck=DeckOut(
+            robot=Robot.GENERIC.value,
+            pipettes=[_pip("p300_single_gen2", "right")],
+            modules=[],
+            accessories=[AccessoryOut(kind="gripper", display="Robot arm")],
+            labware=[
+                _lw("tips", "tiprack_300", "1"),
+                _lw(
+                    "res",
+                    "reservoir_12",
+                    "2",
+                    label="Buffer",
+                    initial={"A1": WellFillOut(liquid=buffer, volume=12000)},
+                ),
+                _lw(
+                    "plate",
+                    "wellplate_96",
+                    "3",
+                    label="Sample plate",
+                    initial=_all_wells("wellplate_96", sample, 40),
+                ),
+                _lw("station", "wellplate_6", "5", label=gap.instrument),
+            ],
+        ),
+        steps=steps,
+        code_lang="PyLabRobot",
+        fallback_note=(
+            f"{cap} isn't a native Opentrons deck capability — this scene models a general lab "
+            f"robot (arm + {gap.instrument}). The steps and PyLabRobot script are what such a robot "  # noqa: E501
+            "would run; nothing executes here."
+        ),
+        code=_pylabrobot_script(request, gap),
+    )
+
+
+def _pylabrobot_script(request: str, gap: CapabilityGap) -> str:
+    inst = _slug(gap.instrument)
     return (
-        "from opentrons import protocol_api\n\n"
-        'metadata = {"protocolName": "Fill 96-well plate", "author": "Claymore", '
-        '"apiLevel": "2.20"}\n\n\n'
-        "def run(protocol: protocol_api.ProtocolContext):\n"
-        '    tips = protocol.load_labware("opentrons_96_tiprack_300ul", 1)\n'
-        '    reservoir = protocol.load_labware("nest_12_reservoir_15ml", 2)\n'
-        '    plate = protocol.load_labware("corning_96_wellplate_360ul_flat", 3)\n'
-        '    p300 = protocol.load_instrument("p300_multi_gen2", "right", tip_racks=[tips])\n\n'
-        "    p300.pick_up_tip()\n"
-        "    for column in plate.columns():\n"
-        '        p300.aspirate(100, reservoir["A1"])\n'
-        "        p300.dispense(100, column[0])\n"
-        "    p300.drop_tip()\n"
+        "\n".join(
+            [
+                '"""Generated by Claymore — a general lab-robot plan (not Opentrons).',
+                f"Request: {request.strip()[:100]}",
+                "Runs on any PyLabRobot-supported deck; the off-deck step drives an external instrument.",  # noqa: E501
+                '"""',
+                "import asyncio",
+                "",
+                "from pylabrobot.liquid_handling import LiquidHandler",
+                "from pylabrobot.liquid_handling.backends import ChatterboxBackend",
+                "from pylabrobot.resources import Deck, Cos_96_wellplate_360ul, HTF_L",
+                "",
+                "",
+                "async def main():",
+                "    lh = LiquidHandler(backend=ChatterboxBackend(), deck=Deck())",
+                "    await lh.setup()",
+                "",
+                '    tips = HTF_L(name="tips")',
+                '    plate = Cos_96_wellplate_360ul(name="sample_plate")',
+                "    lh.deck.assign_child_resource(tips, location=(0, 0, 0))",
+                "    lh.deck.assign_child_resource(plate, location=(150, 0, 0))",
+                "",
+                "    # 1) prep the samples on-deck",
+                '    await lh.pick_up_tips(tips["A1:H1"])',
+                "    for col in range(6):",
+                '        await lh.aspirate(plate[f"A{col + 1}"], vols=[100])',
+                '        await lh.dispense(plate[f"A{col + 1}"], vols=[100])',
+                '    await lh.drop_tips(tips["A1:H1"])',
+                "",
+                f"    # 2) hand the plate to the {gap.instrument} ({gap.capability})",
+                f"    await {inst}_run(plate)",
+                "",
+                "    await lh.stop()",
+                "",
+                "",
+                f"async def {inst}_run(plate):",
+                f'    """Drive the {gap.instrument} over its own API, then return the plate to the deck.',  # noqa: E501
+                f'    Claymore texts the {gap.capability} result back and ingests it into memory."""',  # noqa: E501
+                "    # e.g. instrument.load(plate); await instrument.run(); result = instrument.read()",  # noqa: E501
+                "    await asyncio.sleep(0)  # placeholder for the vendor call",
+                "",
+                "",
+                'if __name__ == "__main__":',
+                "    asyncio.run(main())",
+            ]
+        )
+        + "\n"
     )
 
 
-def _serial_dilution_python() -> str:
-    return (
-        "from opentrons import protocol_api\n\n"
-        'metadata = {"protocolName": "Serial dilution", "author": "Claymore", '
-        '"apiLevel": "2.20"}\n\n\n'
-        "def run(protocol: protocol_api.ProtocolContext):\n"
-        '    tips = protocol.load_labware("opentrons_96_tiprack_300ul", 1)\n'
-        '    reservoir = protocol.load_labware("nest_12_reservoir_15ml", 2)\n'
-        '    plate = protocol.load_labware("corning_96_wellplate_360ul_flat", 3)\n'
-        '    p300 = protocol.load_instrument("p300_single_gen2", "right", tip_racks=[tips])\n\n'
-        "    row = plate.rows()[0]\n"
-        "    p300.pick_up_tip()\n"
-        '    p300.transfer(100, reservoir["A1"], row[0], new_tip="never")\n'
-        "    for i in range(11):\n"
-        '        p300.transfer(100, row[i], row[i + 1], mix_after=(3, 50), new_tip="never")\n'
-        "    p300.drop_tip()\n"
-    )
+_RECIPES: list[tuple[re.Pattern[str], Callable[[], ProtocolOut]]] = [
+    (re.compile(r"pcr|master ?mix|amplif|thermocycl|denatur|anneal|cycling", re.I), _pcr_setup),
+    (re.compile(r"bead|spri|clean-?up|purif|magnet", re.I), _mag_cleanup),
+    (
+        re.compile(r"absorb|elisa|colorimetr|plate ?read|\bod\b|a450|450 ?nm|assay read", re.I),
+        _absorbance_assay,
+    ),
+    (re.compile(r"heat|shak|incubat|resuspend|37 ?°?c|mix at", re.I), _heater_shake),
+    (re.compile(r"normali[sz]|equal concentration|equimolar|dilute to", re.I), _normalization),
+    (re.compile(r"dilut|serial|titrat", re.I), _serial_dilution),
+    (
+        re.compile(r"fill|dispense|aliquot|stamp|96|plate|pipette|transfer|buffer", re.I),
+        _fill_plate,
+    ),
+]
+
+
+def _build_protocol(request: str) -> ProtocolOut:
+    """Compose a scene from the catalog based on the request's shape.
+
+    A capability a liquid handler lacks becomes a general lab-robot scene (+ PyLabRobot). Otherwise
+    the request routes to the closest experiment family; each uses only catalog labware/modules so
+    the generated Python loads real Opentrons definitions.
+    """
+    gap = capability_gap(request)
+    if gap is not None:
+        return _general_scene(request, gap)
+    for pattern, build in _RECIPES:
+        if pattern.search(request):
+            return build()
+    return _fill_plate()
 
 
 # --- analysis + simulation stubs --------------------------------------------------------------

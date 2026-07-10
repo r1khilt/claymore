@@ -1,9 +1,11 @@
 import { motion } from 'framer-motion'
 import { FlaskConical, ArrowRight, Layers } from 'lucide-react'
-import type { Protocol } from '@/lib/protocol'
+import { primaryPipette, type Protocol } from '@/lib/protocol'
 import { Deck2D } from '@/components/bench/Deck2D'
+import { cn } from '@/lib/utils'
 
 export function ProtocolCard({ protocol, onOpen }: { protocol: Protocol; onOpen: () => void }) {
+  const general = protocol.mode === 'general'
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -12,24 +14,34 @@ export function ProtocolCard({ protocol, onOpen }: { protocol: Protocol; onOpen:
       className="glass-raised overflow-hidden rounded-2xl"
     >
       <div className="flex items-center gap-2.5 px-4 pt-3.5">
-        <span className="grid size-7 place-items-center rounded-lg bg-sage-500/14 text-sage-700">
+        <span
+          className={cn(
+            'grid size-7 place-items-center rounded-lg',
+            general ? 'bg-amber-400/16 text-amber-500' : 'bg-sage-500/14 text-sage-700',
+          )}
+        >
           <FlaskConical className="size-4" strokeWidth={2} />
         </span>
         <div className="min-w-0">
           <div className="text-[14px] font-medium text-ink">{protocol.name}</div>
-          <div className="text-[12px] text-muted">
-            {protocol.deck.robot} · {protocol.deck.pipette.display} · {protocol.steps.length} steps
+          <div className="truncate text-[12px] text-muted">
+            {protocol.platformLabel} · {primaryPipette(protocol).display} · {protocol.steps.length} steps
           </div>
         </div>
-        <span className="ml-auto flex items-center gap-1.5 rounded-full bg-sage-500/12 px-2 py-1 text-[11px] font-medium text-sage-700">
-          <span className="size-1.5 rounded-full bg-sage-500" />
-          dry-run
+        <span
+          className={cn(
+            'ml-auto flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium',
+            general ? 'bg-amber-400/12 text-amber-500' : 'bg-sage-500/12 text-sage-700',
+          )}
+        >
+          <span className={cn('size-1.5 rounded-full', general ? 'bg-amber-400' : 'bg-sage-500')} />
+          {general ? 'off-deck' : 'dry-run'}
         </span>
       </div>
 
       {/* mini deck preview */}
       <div className="mx-4 mt-3 rounded-xl bg-white/45 p-3 ring-1 ring-inset ring-black/[0.05]">
-        <div className="mx-auto h-[168px]">
+        <div className="mx-auto h-[176px]">
           <Deck2D protocol={protocol} preview />
         </div>
       </div>
@@ -37,6 +49,7 @@ export function ProtocolCard({ protocol, onOpen }: { protocol: Protocol; onOpen:
       {protocol.groundedNote && (
         <p className="px-4 pt-3 text-[12.5px] italic text-sage-700/80">{protocol.groundedNote}</p>
       )}
+      {protocol.fallbackNote && <p className="px-4 pt-3 text-[12.5px] text-amber-500/90">{protocol.fallbackNote}</p>}
 
       <div className="flex items-center gap-2 px-4 pb-3.5 pt-3">
         <button

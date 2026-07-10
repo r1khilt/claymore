@@ -22,8 +22,8 @@ it looks alive with zero backend.
 | Zone | What it is |
 |---|---|
 | **Left rail** | Quiet nav — Ask · Memory · Approvals · Connectors · Proactive — plus a **Recent chats** list and a **profile notch** at the bottom that opens **Settings** |
-| **Composer** | The main chat is an agent. It streams a **thought + tool-call trace** (search memory → decide → ingest / analyze / generate a run) and returns cited answers, **bio-analysis** metric cards, or a generated Opentrons scene. Refuses anything Opentrons can't do (see the hardware catalog). Every conversation is **saved locally** and restorable from Recent. |
-| **Bench** | An Opentrons workspace that renders **any** generated protocol dynamically: an animated **2D deck** (moving pipette, filling wells, modules like thermocycler / heater-shaker / magnetic) with a **2D / 3D toggle** (react-three-fiber), the generated **Python Protocol API**, a live run log, and a human-gated physical run |
+| **Composer** | The main chat is an agent. It streams a **thought + tool-call trace** (search memory → decide → ingest / analyze / compose a run) and returns cited answers, **bio-analysis** metric cards, or a **bespoke robot scene** composed from the full Opentrons catalog. If a step needs an instrument off the deck (centrifuge, microscope, sequencer), it still builds a **general lab-robot** scene + a **PyLabRobot** movement script rather than refusing. Every conversation is **saved locally** and restorable from Recent. |
+| **Bench** | A deck workspace that renders **any** scene the agent authors: a detailed **2D deck** (moving gantry, per-reagent liquids with volume menisci, depleting tip racks, gripper labware moves, and live modules — thermocycler lid, heater-shaker, temperature, magnetic block, absorbance reader) with a **2D / 3D toggle** (react-three-fiber), the generated **Python** (Opentrons Protocol API *or* PyLabRobot), a step log, and a human-gated physical run. Airy, subtle, floating controls. |
 | **Right rail** | Recreated **Slack · iMessage · Notion · Gmail · GitHub** feeds showing the key messages the agent reasons on, each with an *in-memory* cue |
 | **Settings** | Local, single-user config: **profile** (name / lab / avatar upload / accent), **API keys** (Anthropic + Voyage, used to run the live Composer), **reasoning level** + live/debug toggles, **usage & metrics** (real token counts + per-tool call counts recorded from live runs), an **error log**, and a **Data** panel (where the file lives, export JSON, clear). |
 | **Memory / Approvals / Connectors / Proactive** | Full mocked views for the rest of the product surface |
@@ -45,8 +45,9 @@ app-state store, and holds no multi-tenant scoping — one user, one machine.
   event stream* the backend produces (thoughts, tool calls, answers, protocols, analyses), so the
   whole agent experience is alive with **zero backend or keys**. Answers come from the coherent
   `src/lib/mockData.ts` corpus (the CBX2 allosteric thread), matching the real `Reply`/`Citation`
-  shapes. Robot scenes come from `generateScene()` (`src/lib/protocol.ts`), validated against the
-  supported-hardware catalog in `src/lib/hardware.ts`.
+  shapes. Robot scenes come from `generateScene()` (`src/lib/protocol.ts`), composed from the full
+  supported-hardware catalog in `src/lib/hardware.ts`; the backend mirrors both field-for-field so
+  live and mock render identical scenes.
 - **Live:** the backend exposes a streaming **`POST /api/agent`** (SSE) running the real Claude
   tool-loop (`src/claymore/agent/agent_loop.py`), plus the single-shot `POST /api/ask`. The client
   is already wired: `AskView` calls `agentStream()` (`src/lib/agent.ts`), which reads the live SSE
@@ -68,8 +69,9 @@ src/
 ├── lib/{types,api,mockData,sources,utils}.ts
 ├── lib/local.ts            # local store client (/api/local/* + localStorage fallback): chats, settings, metrics
 ├── lib/agent.ts            # mock agent engine + live SSE reader; agentStream() picks by VITE_CLAYMORE_LIVE
-├── lib/hardware.ts         # Opentrons supported-hardware catalog (pipettes/labware/modules)
-├── lib/protocol.ts         # deck model + geometry + generateScene() (catalog-validated)
+├── lib/hardware.ts         # full Opentrons catalog (pipettes/labware/modules/accessories/liquids) + capabilityGap
+├── lib/deck.ts             # OT-2 / Flex / Generic deck geometry + well coordinates
+├── lib/protocol.ts         # scene model + run derivation + generateScene() (Opentrons + PyLabRobot fallback)
 ├── components/
 │   ├── Background.tsx       # nature horizon + paper-shaders mesh + cream wash
 │   ├── Sidebar.tsx

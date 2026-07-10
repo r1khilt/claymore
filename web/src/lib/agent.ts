@@ -125,27 +125,48 @@ export async function* runAgent(query: string): AsyncGenerator<AgentEvent> {
   // --- robot scene ---
   if (wantsProtocol) {
     const g = id()
-    yield { type: 'toolStart', id: g, tool: 'generate_protocol', label: 'Generating an Opentrons protocol' }
-    await sleep(1000)
-    const scene = generateScene(q)
-    if ('unsupported' in scene) {
-      yield { type: 'toolEnd', id: g, ok: false, summary: `unsupported: ${scene.unsupported}` }
-      yield {
-        type: 'answer',
-        text: `I can't run that on the deck — ${scene.unsupported}. I can prep samples for that step, or design a protocol around the supported hardware (pipettes, plates, tube racks, thermocycler, heater-shaker, magnetic module). Want me to?`,
-        citations: [],
-      }
-      yield { type: 'done' }
-      return
+    const proto = generateScene(q).protocol
+    const general = proto.mode === 'general'
+    yield {
+      type: 'toolStart',
+      id: g,
+      tool: 'generate_protocol',
+      label: general ? 'Composing a lab-robot run' : 'Composing an Opentrons scene',
     }
-    const proto = scene.protocol
-    yield { type: 'toolEnd', id: g, ok: true, summary: `${proto.name} · ${proto.steps.length} steps · validated against supported hardware` }
+    await sleep(1000)
+    const labwareCount = proto.deck.labware.length
+    const modNames = proto.deck.modules.map((m) => m.display).join(', ')
+    yield {
+      type: 'toolEnd',
+      id: g,
+      ok: true,
+      summary: general
+        ? `${proto.name} · off-deck handoff · ${proto.steps.length} steps`
+        : `${proto.name} · ${labwareCount} labware${modNames ? ` · ${modNames}` : ''} · ${proto.steps.length} steps`,
+    }
 
     const s = id()
-    yield { type: 'toolStart', id: s, tool: 'simulate', label: 'Simulating (opentrons.simulate · dry-run)' }
-    await sleep(1000)
-    yield { type: 'toolEnd', id: s, ok: true, summary: `${proto.steps.length} commands · no deck collisions · est. run ready` }
+    yield {
+      type: 'toolStart',
+      id: s,
+      tool: 'simulate',
+      label: general ? 'Simulating (PyLabRobot · dry-run)' : 'Simulating (opentrons.simulate · dry-run)',
+    }
+    await sleep(950)
+    yield {
+      type: 'toolEnd',
+      id: s,
+      ok: true,
+      summary: `${proto.steps.length} commands · no deck collisions · run ready`,
+    }
     yield { type: 'protocol', protocol: proto }
+    if (general) {
+      yield {
+        type: 'answer',
+        text: `${proto.fallbackNote ?? ''} I've built the deck, the step sequence, and a PyLabRobot movement script — open it in the Bench to scrub through or view the code.`,
+        citations: [],
+      }
+    }
     yield { type: 'done' }
     return
   }

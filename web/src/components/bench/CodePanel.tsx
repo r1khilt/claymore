@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 
-export function CodePanel({ code }: { code: string }) {
+export function CodePanel({ code, lang }: { code: string; lang: string }) {
   const [copied, setCopied] = useState(false)
 
   function copy() {
@@ -13,8 +13,8 @@ export function CodePanel({ code }: { code: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-line/70 px-3 py-2">
-        <span className="font-mono text-[11px] text-muted">protocol.py · apiLevel 2.20</span>
+      <div className="flex items-center justify-between border-b border-line/70 px-3.5 py-2">
+        <span className="font-mono text-[11px] text-muted">protocol.py · {lang}</span>
         <button
           onClick={copy}
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted transition-colors hover:bg-black/5 hover:text-ink"

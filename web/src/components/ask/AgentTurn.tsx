@@ -31,6 +31,7 @@ import type { Protocol } from '@/lib/protocol'
 import { cn } from '@/lib/utils'
 import { AnswerView } from './AnswerView'
 import { ProtocolCard } from './ProtocolCard'
+import { MLResultCard } from './MLResultCard'
 
 const TOOL_ICON: Record<ToolName, LucideIcon> = {
   search_memory: Search,
@@ -39,6 +40,7 @@ const TOOL_ICON: Record<ToolName, LucideIcon> = {
   simulate: Play,
   run_analysis: Cpu,
   run_claude_science: Microscope,
+  run_ml_analysis: Cpu,
 }
 
 // Icon per Claude Science step action (computer-use actions + the simulated stages).
@@ -357,7 +359,8 @@ export function AgentTurn({
       e.type === 'answer' ||
       e.type === 'protocol' ||
       e.type === 'analysis' ||
-      e.type === 'scienceSession',
+      e.type === 'scienceSession' ||
+      e.type === 'mlResult',
   )
   // The live agent surfaces its final prose as both a `thought` and the `answer`;
   // don't render the thought twice.
@@ -406,6 +409,12 @@ export function AgentTurn({
             return (
               <div key={i} className="mt-1">
                 <AnalysisCard result={e.analysis} />
+              </div>
+            )
+          case 'mlResult':
+            return (
+              <div key={i} className="mt-1">
+                <MLResultCard result={e.result} />
               </div>
             )
           case 'error':

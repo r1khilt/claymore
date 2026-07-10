@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Sparkles, Paperclip, MessageSquare, Star, MoreHorizontal, ChevronRight } from 'lucide-react'
+import { Paperclip, MessageSquare, Star, MoreHorizontal, ChevronRight } from 'lucide-react'
 import type { SourceFeed, SourceMessage } from '@/lib/types'
 import { PLATFORM, PlatformIcon } from '@/lib/sources'
 import { Avatar } from '@/components/ui/Avatar'

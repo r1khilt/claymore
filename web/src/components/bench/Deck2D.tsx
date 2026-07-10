@@ -8,9 +8,10 @@
  */
 import type { ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { labwareDef, moduleDef, type LabwareDef, type ModuleDef } from '@/lib/hardware'
+import { instrumentDef, labwareDef, moduleDef, type LabwareDef, type ModuleDef } from '@/lib/hardware'
 import {
   deckGeom,
+  instrumentRect,
   slotRect,
   wellCenter,
   wellToRC,
@@ -25,6 +26,8 @@ import {
   stepWells,
   primaryPipette,
   type DeckModule,
+  type Instrument,
+  type InstrumentRun,
   type Labware,
   type ModuleRun,
   type Protocol,
@@ -350,17 +353,70 @@ function slotRect0(): Rect {
   return { x: 0, y: 0, w: SLOT_W, h: SLOT_H }
 }
 
-function LabwareView({ geom, lab, slot, fills, used, magnet, label }: { geom: DeckGeom; lab: Labware; slot: string; fills: Record<string, WellRef>; used: Record<string, boolean>; magnet: boolean; label: boolean }) {
-  const r = slotRect(geom, slot)
+function LabwareView({ lab, pos, fills, used, magnet, label }: { lab: Labware; pos: { x: number; y: number }; fills: Record<string, WellRef>; used: Record<string, boolean>; magnet: boolean; label: boolean }) {
   return (
-    <motion.g initial={false} animate={{ x: r.x, y: r.y }} transition={{ type: 'spring', stiffness: 120, damping: 18 }}>
+    <motion.g initial={false} animate={{ x: pos.x, y: pos.y }} transition={{ type: 'spring', stiffness: 120, damping: 18 }}>
       <LabwareBody lab={lab} fills={fills} used={used} magnet={magnet} />
       {label && lab.label && (
-        <text x={r.w / 2} y={r.h - 5} textAnchor="middle" fontSize={8} fill={C.label} fontWeight={600}>
+        <text x={SLOT_W / 2} y={SLOT_H - 5} textAnchor="middle" fontSize={8} fill={C.label} fontWeight={600}>
           {lab.label}
         </text>
       )}
     </motion.g>
+  )
+}
+
+/* --------------------------------------------------------------- instruments -- */
+
+/** An off-deck instrument drawn as a legible schematic: housing + badge + status, and (for a
+ *  centrifuge) a rotor that spins while running with the plate riding a bucket. */
+function InstrumentView({ rect, inst, run }: { rect: Rect; inst: Instrument; run?: InstrumentRun }) {
+  const def = instrumentDef(inst.kind)
+  const cx = rect.x + rect.w / 2
+  const cy = rect.y + rect.h / 2 + 4
+  const running = !!run?.running
+  const R = Math.min(rect.w, rect.h) * 0.26
+  return (
+    <g>
+      <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={16} fill="#f1efe8" stroke={def.tint} strokeOpacity={0.34} strokeWidth={1.4} />
+      <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={16} fill={def.tint} opacity={0.06} />
+      {/* badge */}
+      <rect x={rect.x + 8} y={rect.y + 8} width={40} height={15} rx={4} fill={def.tint} opacity={0.92} />
+      <text x={rect.x + 28} y={rect.y + 18.5} textAnchor="middle" fontSize={9} fontWeight={700} fill="#fff">{def.short}</text>
+      {/* status */}
+      <circle cx={rect.x + rect.w - 14} cy={rect.y + 15} r={5} fill={running ? '#5f8257' : '#c0beb4'} />
+      {running && (
+        <motion.circle cx={rect.x + rect.w - 14} cy={rect.y + 15} fill="none" stroke="#5f8257" strokeWidth={1.4} initial={{ opacity: 0.55, r: 5 }} animate={{ opacity: 0, r: 12 }} transition={{ duration: 1.1, repeat: Infinity }} />
+      )}
+      {def.spins ? (
+        <g>
+          <circle cx={cx} cy={cy} r={R + 9} fill="#e9e7df" stroke="#cdcabf" strokeWidth={1.5} />
+          <circle cx={cx} cy={cy} r={R + 9} fill="none" stroke={run?.lidOpen ? def.tint : '#dedbd0'} strokeOpacity={run?.lidOpen ? 0.5 : 1} strokeWidth={run?.lidOpen ? 1.6 : 3} strokeDasharray={run?.lidOpen ? '4 4' : undefined} />
+          <motion.g
+            style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
+            animate={running ? { rotate: 360 } : { rotate: 0 }}
+            transition={running ? { duration: 0.5, repeat: Infinity, ease: 'linear' } : { duration: 0.3 }}
+          >
+            {Array.from({ length: 4 }).map((_, i) => {
+              const ang = (i / 4) * Math.PI * 2
+              const bx = cx + Math.cos(ang) * R
+              const by = cy + Math.sin(ang) * R
+              const loaded = run?.loaded && i === 0
+              return (
+                <g key={i}>
+                  <line x1={cx} y1={cy} x2={bx} y2={by} stroke="#9a9ea4" strokeWidth={2.4} strokeLinecap="round" />
+                  <rect x={bx - 6} y={by - 8} width={12} height={16} rx={2} fill={loaded ? '#f4f3ee' : '#c2c5c9'} stroke="#8f9188" strokeWidth={0.8} transform={`rotate(${(ang * 180) / Math.PI + 90} ${bx} ${by})`} />
+                </g>
+              )
+            })}
+            <circle cx={cx} cy={cy} r={5.5} fill="#6d7278" />
+          </motion.g>
+        </g>
+      ) : (
+        <rect x={cx - R} y={cy - R} width={R * 2} height={R * 2} rx={6} fill="#e9e7df" stroke="#cdcabf" strokeWidth={1.4} />
+      )}
+      <text x={cx} y={rect.y + rect.h - 7} textAnchor="middle" fontSize={9} fill={C.label} fontWeight={600}>{inst.label ?? def.display}</text>
+    </g>
   )
 }
 
@@ -448,29 +504,60 @@ function wellRing(protocol: Protocol, geom: DeckGeom, state: RunState, step: Ste
 export function Deck2D({ protocol, state, preview }: { protocol: Protocol; state?: RunState; preview?: boolean }) {
   const geom = deckGeom(protocol.deck.robot)
   const s = state ?? deriveRun(protocol, -1)
+  const instruments = protocol.deck.instruments ?? []
+
+  // Off-deck instrument footprints, and a viewBox that grows to include them.
+  const instRects: Record<string, Rect> = {}
+  let minX = 0
+  let minY = 0
+  let maxX = geom.width
+  let maxY = geom.height
+  for (const inst of instruments) {
+    const r = instrumentRect(geom, inst.side)
+    instRects[inst.id] = r
+    minX = Math.min(minX, r.x)
+    minY = Math.min(minY, r.y)
+    maxX = Math.max(maxX, r.x + r.w)
+    maxY = Math.max(maxY, r.y + r.h)
+  }
+  const pad = 12
+  const viewBox = `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`
 
   // Precompute per-labware coloured fills so the well components stay dumb.
   const colored: Record<string, WellRef> = {}
   for (const [k, v] of Object.entries(s.fills)) colored[k] = { color: liquidColor(protocol, v.liquid), volume: v.volume }
 
   return (
-    <svg viewBox={`0 0 ${geom.width} ${geom.height}`} className="h-full w-full" style={{ overflow: 'visible' }} role="img" aria-label={`${protocol.platformLabel} deck`}>
+    <svg viewBox={viewBox} className="h-full w-full" style={{ overflow: 'visible' }} role="img" aria-label={`${protocol.platformLabel} deck`}>
       <DeckPlate geom={geom} />
+      {instruments.map((inst) => (
+        <InstrumentView key={inst.id} rect={instRects[inst.id]} inst={inst} run={s.instruments[inst.id]} />
+      ))}
       {protocol.deck.modules.map((m) => (
         <ModuleView key={m.id} geom={geom} mod={m} run={s.modules[m.id]} />
       ))}
       {protocol.deck.labware.map((lab) => {
-        // Magnet pellet keys off the module under the labware's CURRENT slot (a plate can be
-        // gripper-moved onto the magnetic block), not the static onModule placement.
+        // A plate can be gripper-moved onto a module or handed to an off-deck instrument, so its
+        // drawn position keys off the current run state, not the static placement.
+        const instId = s.inInstrument[lab.id]
         const slot = s.slotOf[lab.id] ?? lab.slot
         const modHere = protocol.deck.modules.find((m) => m.slot === slot)
         const magnet = modHere ? !!s.modules[modHere.id]?.magnet : false
+        // While it spins, the plate is hidden inside the instrument (the rotor bucket shows it).
+        if (instId && s.instruments[instId]?.running) return null
+        let pos: { x: number; y: number }
+        if (instId && instRects[instId]) {
+          const r = instRects[instId]
+          pos = { x: r.x + r.w / 2 - SLOT_W / 2, y: r.y + r.h / 2 - SLOT_H / 2 }
+        } else {
+          const r = slotRect(geom, slot)
+          pos = { x: r.x, y: r.y }
+        }
         return (
           <LabwareView
             key={lab.id}
-            geom={geom}
             lab={lab}
-            slot={slot}
+            pos={pos}
             fills={colored}
             used={s.tipsUsed[lab.id] ?? {}}
             magnet={magnet}

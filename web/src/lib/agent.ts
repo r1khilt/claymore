@@ -11,9 +11,24 @@
  */
 import type { Citation } from './types'
 import type { Protocol } from './protocol'
-import { generateScene, isProtocolRequest } from './protocol'
+import { editInstrumentScene, generateScene, instrumentSceneParams, isProtocolRequest } from './protocol'
 import { answerFor } from './mockData'
 import { isLive } from './api'
+
+/** One prior conversation turn, in the wire vocabulary the backend expects. */
+export interface ConvTurn {
+  role: 'user' | 'agent'
+  text: string
+}
+
+/** What the agent needs from the conversation to answer with continuity (the memory fix): the
+ *  prior turns, and the last scene it produced so a follow-up can *edit* it instead of starting
+ *  over. Both mock and live receive this; the live path forwards `history` to /api/agent. */
+export interface AgentContext {
+  history?: ConvTurn[]
+  lastProtocol?: Protocol
+  signal?: AbortSignal
+}
 
 export type ToolName =
   | 'search_memory'
@@ -464,8 +479,36 @@ export function mlResultFor(query: string): MLResult {
 }
 
 
+/** Whether a follow-up is a *tweak* of the current scene rather than a brand-new request. */
+function looksLikeSceneEdit(q: string): boolean {
+  return /\b(make it|change|instead|now (make|spin|run|use|set)|use (a|an|the)|spin|centrifuge|longer|shorter|faster|slower|gentl|bigger|smaller|more wells|fewer wells|increase|decrease|set (it|the)|adjust|\d{1,3}[\s-]*well|\d+\s*(seconds?|secs?|minutes?|mins?|rpm|rcf)|volume|µl|microlit)\b/i.test(
+    q,
+  )
+}
+
+/** Whether a follow-up actually asks for a whole *new* protocol (so it shouldn't edit the last one). */
+function looksLikeNewProtocol(q: string): boolean {
+  return /\b(fill a|dispense into|run a|set up a|serial dilut|\bpcr\b|master ?mix|bead ?cleanup|clean ?up|resuspend|normali[sz]|elisa|absorbance|new protocol|from scratch)\b/i.test(
+    q,
+  )
+}
+
+/** One-line summary of what a follow-up edit changed vs. the previous scene (sells the continuity). */
+function changeSummary(prev: Protocol, next: Protocol): string {
+  const a = instrumentSceneParams(prev)
+  const b = instrumentSceneParams(next)
+  if (!b) return 'Updated the scene.'
+  const parts: string[] = []
+  if (!a || a.plateKind !== b.plateKind) parts.push(`a ${b.plateDisplay}`)
+  if (!a || a.seconds !== b.seconds) parts.push(`${b.seconds ?? 0} s spin`)
+  if ((a?.rpm ?? undefined) !== b.rpm && b.rpm) parts.push(`${b.rpm.toLocaleString()} rpm`)
+  if (a && a.instrument !== b.instrument && b.instrument) parts.push(`the ${b.instrument.toLowerCase()}`)
+  const changed = parts.length ? parts.join(', ') : 'the run'
+  return `Updated the run — now ${changed}. I kept everything else the same: same prep, same sample, still filling every well before the hand-off.`
+}
+
 /** The agent run as an async event stream. */
-export async function* runAgent(query: string): AsyncGenerator<AgentEvent> {
+export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerator<AgentEvent> {
   let n = 0
   const id = () => `t${++n}`
   const q = query.trim()
@@ -482,6 +525,29 @@ export async function* runAgent(query: string): AsyncGenerator<AgentEvent> {
     /\bclaude science\b|\bworkbench\b/i.test(q) ||
     (wantsAnalysis && /\b(genom|proteom|structur|cheminform|rna|variant|express|pipeline|fold)\b/i.test(q))
   const wantsProtocol = isProtocolRequest(q) && !wantsAnalysis && !wantsML && !wantsScience
+
+  // --- memory: continue on the last scene ---
+  // If the previous turn produced an instrument scene and this turn is a tweak ("spin it for 30 s",
+  // "make it 48-well"), edit that scene instead of regenerating from scratch. This is the visible
+  // "it remembers what we were doing" behaviour.
+  if (ctx?.lastProtocol && !wantsML && !wantsAnalysis && !wantsScience && !wantsIngest && looksLikeSceneEdit(q) && !looksLikeNewProtocol(q)) {
+    const edited = editInstrumentScene(ctx.lastProtocol, q)
+    if (edited) {
+      yield { type: 'thought', text: 'Picking up the scene we were building — tweaking it, keeping the rest.' }
+      const g = id()
+      yield { type: 'toolStart', id: g, tool: 'generate_protocol', label: 'Updating the lab-robot scene' }
+      await sleep(850)
+      yield { type: 'toolEnd', id: g, ok: true, summary: `${edited.name} · ${edited.steps.length} steps · updated` }
+      const sm = id()
+      yield { type: 'toolStart', id: sm, tool: 'simulate', label: 'Re-simulating (PyLabRobot · dry-run)' }
+      await sleep(700)
+      yield { type: 'toolEnd', id: sm, ok: true, summary: `${edited.steps.length} commands · no collisions · run ready` }
+      yield { type: 'protocol', protocol: edited }
+      yield { type: 'answer', text: changeSummary(ctx.lastProtocol, edited), citations: [] }
+      yield { type: 'done' }
+      return
+    }
+  }
 
   // --- optional ingest step ---
   if (wantsIngest) {
@@ -638,14 +704,16 @@ export async function* runAgent(query: string): AsyncGenerator<AgentEvent> {
 
 /* -------------------------------------------------- live: /api/agent SSE -- */
 
-async function* runAgentLive(query: string, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+async function* runAgentLive(query: string, ctx?: AgentContext): AsyncGenerator<AgentEvent> {
   let res: Response
   try {
     res = await fetch('/api/agent', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query }),
-      signal,
+      // Send the prior turns so the real agent has the conversation (backend seeds them into the
+      // Claude message list). `history` is the wire contract in api/routes/agent.py.
+      body: JSON.stringify({ query, history: ctx?.history ?? [] }),
+      signal: ctx?.signal,
     })
   } catch {
     yield { type: 'error', message: 'could not reach the agent endpoint' }
@@ -681,10 +749,10 @@ async function* runAgentLive(query: string, signal?: AbortSignal): AsyncGenerato
 
 /** Mock or live agent event stream, chosen by VITE_CLAYMORE_LIVE. Same event
  *  contract either way, so the Composer doesn't care which is running. */
-export async function* agentStream(query: string, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+export async function* agentStream(query: string, ctx?: AgentContext): AsyncGenerator<AgentEvent> {
   if (isLive) {
-    yield* runAgentLive(query, signal)
+    yield* runAgentLive(query, ctx)
   } else {
-    yield* runAgent(query)
+    yield* runAgent(query, ctx)
   }
 }

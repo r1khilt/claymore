@@ -432,7 +432,7 @@ async def test_route_uses_restricted_direct_loop_only_when_sdk_unavailable(
     frames = [
         frame
         async for frame in agent_route._event_stream(
-            "hello", make_settings(anthropic_api_key="sk-test")
+            "hello", [], make_settings(anthropic_api_key="sk-test")
         )
     ]
 

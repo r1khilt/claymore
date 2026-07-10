@@ -17,6 +17,9 @@ import {
   Power,
   MessageSquare,
   Hand,
+  RotateCw,
+  PackageOpen,
+  PackageCheck,
   type LucideIcon,
 } from 'lucide-react'
 import type { Protocol, StepKind } from '@/lib/protocol'
@@ -41,6 +44,9 @@ const ICON: Record<StepKind, LucideIcon> = {
   open_lid: ChevronsUp,
   close_lid: ChevronsDown,
   read_absorbance: ScanLine,
+  load_instrument: PackageOpen,
+  run_instrument: RotateCw,
+  unload_instrument: PackageCheck,
   delay: Timer,
   comment: MessageSquare,
 }

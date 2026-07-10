@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowUpRight } from 'lucide-react'
-import type { AgentEvent } from '@/lib/agent'
+import type { AgentEvent, ConvTurn } from '@/lib/agent'
 import { agentStream } from '@/lib/agent'
 import type { Protocol } from '@/lib/protocol'
 import { BrandMark } from '@/components/Sidebar'
@@ -12,6 +12,44 @@ interface Turn {
   q: string
   events: AgentEvent[]
   running: boolean
+}
+
+/** A compact one-line record of what the agent said/did on a turn — the "agent" side of history. */
+function agentTextFromEvents(events: AgentEvent[]): string {
+  const answers: string[] = []
+  for (const e of events) if (e.type === 'answer') answers.push(e.text)
+  if (answers.length) return answers.join('\n')
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    if (e.type === 'protocol') return `Built the "${e.protocol.name}" scene.`
+    if (e.type === 'mlResult') return `Ran an ML analysis: ${e.result.title} (${e.result.verdict}).`
+    if (e.type === 'analysis') return e.analysis.summary
+    if (e.type === 'scienceSession') return e.session.resultSummary
+  }
+  return ''
+}
+
+/** The most recent protocol the agent produced across the conversation (the edit target). */
+function lastProtocolOf(turns: Turn[]): Protocol | undefined {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const events = turns[i].events
+    for (let j = events.length - 1; j >= 0; j--) {
+      const e = events[j]
+      if (e.type === 'protocol') return e.protocol
+    }
+  }
+  return undefined
+}
+
+/** Build the conversation context the agent needs to answer with continuity (the memory fix). */
+function buildContext(prior: Turn[]): { history: ConvTurn[]; lastProtocol?: Protocol } {
+  const history: ConvTurn[] = []
+  for (const t of prior) {
+    if (t.q.trim()) history.push({ role: 'user', text: t.q })
+    const at = agentTextFromEvents(t.events)
+    if (at) history.push({ role: 'agent', text: at })
+  }
+  return { history, lastProtocol: lastProtocolOf(prior) }
 }
 
 /** A persisted turn (no transient `running` flag) — the shape stored in a chat. */
@@ -105,13 +143,15 @@ export function AskView({
     const q = (raw ?? value).trim()
     if (!q || busy) return
     setValue('')
+    // Snapshot the prior turns BEFORE appending this one — that's the conversation the agent sees.
+    const ctx = buildContext(turnsRef.current)
     const idx = turnsRef.current.length
     applyTurns((t) => [...t, { q, events: [], running: true }])
     setBusy(true)
     const ctrl = new AbortController()
     abortRef.current = ctrl
     try {
-      for await (const ev of agentStream(q, ctrl.signal)) {
+      for await (const ev of agentStream(q, { ...ctx, signal: ctrl.signal })) {
         if (ctrl.signal.aborted) break
         applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, events: [...turn.events, ev] } : turn)))
       }

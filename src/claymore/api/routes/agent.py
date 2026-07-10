@@ -23,7 +23,8 @@ admin ingest routes and ``/api/ask`` use, so a search here sees what was ingeste
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from typing import Literal
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -38,6 +39,9 @@ from claymore.agent.agent_loop import (
     ThoughtEvent,
     event_json,
     run_agent,
+)
+from claymore.agent.agent_loop import (
+    HistoryTurn as LoopHistoryTurn,
 )
 from claymore.agent.sdk_loop import SAFE_TOOL_NAMES, AgentSdkUnavailable, run_sdk_agent
 from claymore.config import Settings, get_settings
@@ -66,8 +70,18 @@ def _settings_with_key(settings: Settings, key: str) -> Settings:
     return settings.model_copy(update={"anthropic_api_key": SecretStr(key)})
 
 
+class HistoryTurn(BaseModel):
+    """One prior turn of this conversation. ``role`` is the frontend's vocabulary — ``"agent"``,
+    not ``"assistant"``. Treated as untrusted data by the loop, never as instructions."""
+
+    role: Literal["user", "agent"]
+    text: str
+
+
 class AgentRequest(BaseModel):
     query: str
+    history: list[HistoryTurn] = []
+    """Prior turns of this conversation, oldest-first, NOT including ``query``. May be empty."""
 
 
 def _sse(data: str) -> str:
@@ -80,7 +94,9 @@ async def _error_stream(message: str) -> AsyncIterator[str]:
     yield _sse(event_json(ErrorEvent(message=message)))
 
 
-async def _event_stream(query: str, settings: Settings) -> AsyncIterator[str]:
+async def _event_stream(
+    query: str, history: Sequence[LoopHistoryTurn], settings: Settings
+) -> AsyncIterator[str]:
     """Drive the agent loop and frame each event as SSE. Loop errors surface as an ``error`` event
     rather than a dropped connection, so the client always sees a clean terminal state. The
     terminal ``done``/``error`` events are also recorded into the local metrics/error store."""
@@ -91,7 +107,7 @@ async def _event_stream(query: str, settings: Settings) -> AsyncIterator[str]:
         group_ids=(settings.web_lab_id,),
     )
     max_iters, max_tokens = local_store.reasoning_budget()
-    _log.info("web.agent.start", chars=len(query))
+    _log.info("web.agent.start", chars=len(query), history=len(history))
 
     def record(event: AgentEvent) -> None:
         if isinstance(event, DoneEvent):
@@ -109,7 +125,13 @@ async def _event_stream(query: str, settings: Settings) -> AsyncIterator[str]:
     try:
         try:
             async for event in run_sdk_agent(
-                ctx, query, store, settings, max_iterations=max_iters, max_tokens=max_tokens
+                ctx,
+                query,
+                store,
+                settings,
+                history=history,
+                max_iterations=max_iters,
+                max_tokens=max_tokens,
             ):
                 sdk_emitted = True
                 record(event)
@@ -140,6 +162,7 @@ async def _event_stream(query: str, settings: Settings) -> AsyncIterator[str]:
             query,
             store,
             settings,
+            history=history,
             max_iterations=max_iters,
             max_tokens=max_tokens,
             allowed_tool_names=SAFE_TOOL_NAMES,
@@ -161,6 +184,10 @@ async def agent(body: AgentRequest) -> StreamingResponse:
         return StreamingResponse(_error_stream(_UNAVAILABLE), media_type="text/event-stream")
     if not query:
         return StreamingResponse(_error_stream("empty query"), media_type="text/event-stream")
+    # Adapt the validated HistoryTurn models to the loop's ``(role, text)`` pairs; ``run_agent``
+    # normalizes them (alternation, leading-assistant drop, empty-skip, cap) — history is data.
+    history = [(turn.role, turn.text) for turn in body.history]
     return StreamingResponse(
-        _event_stream(query, _settings_with_key(settings, key)), media_type="text/event-stream"
+        _event_stream(query, history, _settings_with_key(settings, key)),
+        media_type="text/event-stream",
     )

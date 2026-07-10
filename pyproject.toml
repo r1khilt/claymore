@@ -22,7 +22,10 @@ dependencies = [
 [project.optional-dependencies]
 # --- adapters (installed per the layer you're building) ---
 memory = ["graphiti-core[falkordb]>=0.3", "voyageai>=0.3"]  # MemoryStore + Embedder (Brain); [falkordb] pulls the FalkorDriver dep
-llm = ["anthropic>=0.40"]                                  # LLM adapter (model routing inside)
+llm = [
+    "anthropic>=0.40",                                    # LLM adapter (model routing inside)
+    "claude-agent-sdk==0.2.115",                          # SDK Composer tool loop (runs run_claude_science)
+]
 ingest = ["composio>=0.5", "composio-anthropic>=0.5"]      # ConnectorHub (Pipes)
 state = ["asyncpg>=0.30", "sqlalchemy[asyncio]>=2.0", "alembic>=1.14", "redis>=5.2", "arq>=0.26"]
 messaging = ["python-telegram-bot>=21.6", "twilio>=9.3"]   # MessagingChannel (Pipes)

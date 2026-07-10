@@ -6,15 +6,8 @@ import { Avatar } from '@/components/ui/Avatar'
 import { cn, clockTime, timeAgo } from '@/lib/utils'
 import { IMessageThread } from './IMessageThread'
 import { SlackThread } from './SlackThread'
-
-function MemoryChip() {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-sage-500/12 px-1.5 py-[3px] text-[10px] font-medium text-sage-700">
-      <Sparkles className="size-2.5" strokeWidth={2.25} />
-      in memory
-    </span>
-  )
-}
+import { GmailMessage } from './GmailMessage'
+import { MemoryChip } from './MemoryChip'
 
 function Attachment({ label }: { label: string }) {
   return (
@@ -149,27 +142,6 @@ function NotionDoc({ feed }: { feed: SourceFeed }) {
   )
 }
 
-function GmailRow({ feed }: { feed: SourceFeed }) {
-  const m = feed.messages[0]
-  if (!m) return null
-  return (
-    <div className={cn('rounded-xl p-2.5', m.extracted && 'bg-sage-500/[0.05]')}>
-      <div className="flex items-center gap-2">
-        <Avatar name={m.author} accent={m.accent} size={30} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13px] font-semibold text-ink">{m.author}</span>
-            <span className="ml-auto shrink-0 text-[11px] text-faint">{timeAgo(m.timestamp)}</span>
-          </div>
-          <div className="truncate text-[12px] font-medium text-muted">{feed.subtitle}</div>
-        </div>
-      </div>
-      <p className="mt-2 line-clamp-3 text-[13px] leading-snug text-ink/75">{m.text}</p>
-      {m.extracted && <div className="mt-2"><MemoryChip /></div>}
-    </div>
-  )
-}
-
 function GithubRow({ m }: { m: SourceMessage }) {
   return (
     <div className="flex items-center gap-2.5 px-1">
@@ -201,7 +173,7 @@ function Body({ feed }: { feed: SourceFeed }) {
     case 'notion':
       return <NotionDoc feed={feed} />
     case 'gmail':
-      return <GmailRow feed={feed} />
+      return <GmailMessage feed={feed} />
     case 'github':
       return (
         <div className="flex flex-col gap-2.5">

@@ -49,6 +49,14 @@
   --color-slack-blue: #1264a3;
   --color-slack-active: #2eb67d;
 
+  /* Gmail reading pane — Google's own UI palette, not the brand red */
+  --font-gm: 'Roboto', 'Helvetica Neue', Arial, ui-sans-serif, sans-serif;
+  --color-gm-blue: #1a73e8;
+  --color-gm-text: #202124;
+  --color-gm-label: #5f6368;
+  --color-gm-line: #dadce0;
+  --color-gm-chip: #f1f3f4;
+
   --radius-lg: 0.85rem;
   --radius-xl: 1.15rem;
   --radius-2xl: 1.6rem;

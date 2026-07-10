@@ -151,6 +151,7 @@ export const feeds: SourceFeed[] = [
       {
         id: 'gm1',
         author: 'Sofia Reyes',
+        handle: 'sofia.reyes@scripps.edu',
         accent: '#c67f3d',
         timestamp: daysAgo(3, 9, 3),
         text: 'Sending over the soak conditions that worked for the allosteric fragment — 10 mM in the mother liquor, 4 h. Happy to co-author if the docking pans out.',

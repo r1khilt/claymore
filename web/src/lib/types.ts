@@ -7,7 +7,7 @@
  */
 
 /** Top-level views selectable from the left sidebar. */
-export type View = 'ask' | 'bench' | 'memory' | 'approvals' | 'connectors' | 'proactive' | 'settings'
+export type View = 'ask' | 'bench' | 'memory' | 'approvals' | 'connectors' | 'proactive'
 
 export type SourcePlatform =
   | 'slack'

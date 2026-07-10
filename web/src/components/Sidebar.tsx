@@ -7,14 +7,13 @@ import {
   Plug,
   Radar,
   PanelLeftClose,
-  ChevronsUpDown,
   Plus,
   type LucideIcon,
 } from 'lucide-react'
 import type { View } from '@/lib/types'
-import type { ChatSummary, Profile } from '@/lib/local'
+import type { ChatSummary, LocalState, Profile } from '@/lib/local'
 import { cn } from '@/lib/utils'
-import { Avatar } from '@/components/ui/Avatar'
+import { ProfileMenu } from '@/components/profile/ProfileMenu'
 
 const NAV: { view: View; label: string; icon: LucideIcon }[] = [
   { view: 'ask', label: 'Ask', icon: Sparkles },
@@ -25,7 +24,7 @@ const NAV: { view: View; label: string; icon: LucideIcon }[] = [
   { view: 'proactive', label: 'Proactive', icon: Radar },
 ]
 
-function BrandMark({ size = 26 }: { size?: number }) {
+export function BrandMark({ size = 26 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden>
       <rect width="64" height="64" rx="16" fill="#3f7d5c" />
@@ -40,8 +39,11 @@ export function Sidebar({
   view,
   onNavigate,
   onHome,
+  onCollapse,
   badges,
   profile,
+  local,
+  onRefresh,
   chats,
   activeChatId,
   onOpenChat,
@@ -51,8 +53,12 @@ export function Sidebar({
   onNavigate: (v: View) => void
   /** Back to the Run · Chat start screen. */
   onHome: () => void
+  /** Hide the sidebar (the parent animates the width). */
+  onCollapse: () => void
   badges?: Partial<Record<View, number>>
   profile: Profile
+  local: LocalState | null
+  onRefresh: () => void
   chats: ChatSummary[]
   activeChatId: string | null
   onOpenChat: (id: string) => void
@@ -67,8 +73,9 @@ export function Sidebar({
           <span className="font-serif text-[22px] leading-none tracking-tight text-ink">claymore</span>
         </button>
         <button
+          onClick={onCollapse}
           className="ml-auto grid size-7 place-items-center rounded-lg text-faint transition-colors hover:bg-black/5 hover:text-muted"
-          title="Collapse"
+          title="Collapse sidebar"
         >
           <PanelLeftClose className="size-[17px]" strokeWidth={1.75} />
         </button>
@@ -142,26 +149,9 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* user — opens Settings */}
+      {/* profile notch — opens the account popover (Usage · Customize · API keys · …) */}
       <div className="mt-2">
-        <button
-          onClick={() => onNavigate('settings')}
-          className={cn(
-            'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-black/5',
-            view === 'settings' && 'bg-black/5',
-          )}
-        >
-          {profile.avatarDataUrl ? (
-            <img src={profile.avatarDataUrl} alt="" className="size-[30px] shrink-0 rounded-full object-cover ring-1 ring-black/10" />
-          ) : (
-            <Avatar name={profile.name || 'You'} accent={profile.avatarColor} size={30} />
-          )}
-          <div className="min-w-0">
-            <div className="truncate text-[13.5px] font-medium text-ink">{profile.name || 'You'}</div>
-            <div className="truncate text-[12px] text-faint">{profile.lab || 'Claymore Lab'}</div>
-          </div>
-          <ChevronsUpDown className="ml-auto size-4 text-faint" strokeWidth={1.75} />
-        </button>
+        <ProfileMenu profile={profile} state={local} onRefresh={onRefresh} />
       </div>
     </aside>
   )

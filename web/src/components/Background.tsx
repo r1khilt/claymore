@@ -1,16 +1,23 @@
-import { MeshGradient } from '@paper-design/shaders-react'
+import { GodRays, MeshGradient } from '@paper-design/shaders-react'
 
 /**
  * The airy backdrop, composited in layers (fixed, behind everything):
  *   1. an animated paper-shaders mesh gradient (soft pastels, very slow)
- *   2. a faint, blurred nature horizon fading up into the canvas
- *   3. a cream wash + top glow for legibility and lift
+ *   2. paper-shaders god rays — morning light falling from above the frame
+ *   3. a faint, blurred nature horizon fading up into the canvas
+ *   4. a cream wash + top glow for legibility and lift
  * Swap the photo by changing HORIZON.
  */
 const HORIZON = '/backgrounds/dawn-hill.jpg'
 const MESH_COLORS = ['#eef4ea', '#e6eef1', '#f4ece0', '#ebe7f1', '#f5f3ee']
+const RAY_COLORS = ['#fdf8ea', '#f1ecdb', '#e8f0e3']
+
+const layer = { position: 'absolute', inset: 0, width: '100%', height: '100%' } as const
 
 export function Background() {
+  const still =
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
       <MeshGradient
@@ -18,8 +25,25 @@ export function Background() {
         distortion={0.85}
         swirl={0.06}
         grainOverlay={0.05}
-        speed={0.14}
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0.72 }}
+        speed={still ? 0 : 0.14}
+        style={{ ...layer, opacity: 0.72 }}
+      />
+
+      {/* soft light through the canopy — rays fall from above the top edge */}
+      <GodRays
+        colors={RAY_COLORS}
+        colorBack="#00000000"
+        colorBloom="#f6f1e2"
+        bloom={0.3}
+        intensity={0.5}
+        density={0.16}
+        spotty={0.25}
+        midSize={0.55}
+        midIntensity={0.35}
+        offsetY={0.9}
+        scale={1.6}
+        speed={still ? 0 : 0.4}
+        style={{ ...layer, opacity: 0.5 }}
       />
 
       {/* faint nature horizon, fading up into the canvas */}

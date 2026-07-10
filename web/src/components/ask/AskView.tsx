@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Plus, ArrowUpRight } from 'lucide-react'
+import { ArrowUpRight } from 'lucide-react'
 import type { AgentEvent } from '@/lib/agent'
 import { agentStream } from '@/lib/agent'
 import type { Protocol } from '@/lib/protocol'
+import { BrandMark } from '@/components/Sidebar'
 import { AskBox } from './AskBox'
 import { AgentTurn } from './AgentTurn'
 
@@ -26,23 +27,35 @@ const SUGGESTIONS = [
   'Dock the CBX2 fragment library',
 ]
 
+function greeting(): string {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 18) return 'Good afternoon'
+  return 'Good evening'
+}
+
 function Suggestions({ onPick }: { onPick: (q: string) => void }) {
   return (
-    <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-      {SUGGESTIONS.map((q, i) => (
-        <motion.button
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.18 }}
+      className="glass-quiet mt-5 overflow-hidden rounded-2xl"
+    >
+      {SUGGESTIONS.map((q) => (
+        <button
           key={q}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15 + i * 0.05 }}
           onClick={() => onPick(q)}
-          className="glass group flex items-center gap-2 rounded-xl px-3.5 py-3 text-left text-[13.5px] text-ink/80 transition-all hover:-translate-y-0.5 hover:text-ink"
+          className="group flex w-full items-center gap-2.5 border-b border-line/60 px-4 py-2.5 text-left text-[13.5px] text-muted transition-colors last:border-0 hover:bg-white/55 hover:text-ink"
         >
           <span className="flex-1">{q}</span>
-          <ArrowUpRight className="size-4 shrink-0 text-faint transition-colors group-hover:text-sage-500" />
-        </motion.button>
+          <ArrowUpRight
+            className="size-4 shrink-0 text-faint transition-colors group-hover:text-sage-500"
+            strokeWidth={1.85}
+          />
+        </button>
       ))}
-    </div>
+    </motion.div>
   )
 }
 
@@ -50,15 +63,15 @@ export function AskView({
   onOpenProtocol,
   initialTurns,
   onPersist,
-  onNewChat,
+  userName,
 }: {
   onOpenProtocol: (p: Protocol) => void
   /** Turns to seed the Composer with when restoring a saved chat (parent remounts on change). */
   initialTurns?: PersistTurn[]
   /** Called after every completed turn so the parent can persist the chat locally. */
   onPersist?: (turns: PersistTurn[]) => void
-  /** Start a fresh chat (parent clears the active chat id). */
-  onNewChat?: () => void
+  /** First name for the empty-state greeting. */
+  userName?: string
 }) {
   const [value, setValue] = useState('')
   const [turns, setTurns] = useState<Turn[]>(() =>
@@ -69,6 +82,10 @@ export function AskView({
   // Mirror of `turns` kept in sync through every update so persistence reads the latest snapshot
   // without waiting on a React state flush.
   const turnsRef = useRef<Turn[]>(turns)
+  // The in-flight stream's aborter. When this AskView unmounts — which only happens on a
+  // chat switch (view changes keep it mounted+hidden) — we cancel the run so it can't keep
+  // streaming into a dead component or persist a stale, half-finished turn to disk.
+  const abortRef = useRef<AbortController | null>(null)
 
   function applyTurns(fn: (t: Turn[]) => Turn[]) {
     setTurns((prev) => {
@@ -82,6 +99,8 @@ export function AskView({
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [turns])
 
+  useEffect(() => () => abortRef.current?.abort(), [])
+
   async function submit(raw?: string) {
     const q = (raw ?? value).trim()
     if (!q || busy) return
@@ -89,51 +108,52 @@ export function AskView({
     const idx = turnsRef.current.length
     applyTurns((t) => [...t, { q, events: [], running: true }])
     setBusy(true)
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     try {
-      for await (const ev of agentStream(q)) {
+      for await (const ev of agentStream(q, ctrl.signal)) {
+        if (ctrl.signal.aborted) break
         applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, events: [...turn.events, ev] } : turn)))
       }
+    } catch (err) {
+      if (!ctrl.signal.aborted) throw err
     } finally {
-      applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, running: false } : turn)))
-      setBusy(false)
-      onPersist?.(turnsRef.current.map(({ q: tq, events }) => ({ q: tq, events })))
+      // On abort the chat is gone — don't touch its (unmounted) state or save the partial turn.
+      if (!ctrl.signal.aborted) {
+        applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, running: false } : turn)))
+        setBusy(false)
+        onPersist?.(turnsRef.current.map(({ q: tq, events }) => ({ q: tq, events })))
+      }
     }
-  }
-
-  function newChat() {
-    if (busy) return
-    applyTurns(() => [])
-    setValue('')
-    onNewChat?.()
   }
 
   const empty = turns.length === 0
 
   if (empty) {
     return (
-      <div className="flex h-full flex-col items-center justify-center px-6 pb-[10vh]">
+      <div className="flex h-full flex-col items-center justify-center px-6 pb-[9vh]">
         <motion.h1
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className="font-serif text-[68px] leading-none tracking-tight text-ink"
+          className="font-serif text-[46px] leading-tight tracking-tight text-ink"
         >
-          claymore
+          {greeting()}
+          {userName ? `, ${userName}` : ''}.
         </motion.h1>
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.12 }}
-          className="mt-3.5 max-w-md text-center text-[15px] leading-relaxed text-muted text-balance"
+          className="mt-3 max-w-md text-center text-[15px] leading-relaxed text-muted text-balance"
         >
-          Ask the lab, run an analysis, or drive the robot — one agent, working across every source,
-          every answer cited.
+          One agent across everything your lab said, wrote, and ran — every answer cited.
         </motion.p>
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.08, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className="mt-9 w-full max-w-[660px]"
+          className="mt-8 w-full max-w-[620px]"
         >
           <AskBox value={value} onChange={setValue} onSubmit={() => submit()} loading={busy} autoFocus />
           <Suggestions onPick={submit} />
@@ -144,32 +164,32 @@ export function AskView({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between px-6 pt-5">
-        <span className="text-[12px] font-medium uppercase tracking-[0.12em] text-faint">Composer</span>
-        <button
-          onClick={newChat}
-          className="flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/40 px-3 py-1.5 text-[13px] text-muted transition-colors hover:bg-white/70 hover:text-ink"
-        >
-          <Plus className="size-3.5" strokeWidth={2} />
-          New
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[720px] flex-col gap-9 px-6 py-7">
+      <div className="mask-fade-y flex-1 overflow-y-auto">
+        <div className="mx-auto flex max-w-[720px] flex-col gap-9 px-6 pb-6 pt-14">
           {turns.map((turn, i) => (
-            <div key={i} className="flex flex-col gap-4">
-              <h2 className="text-[22px] font-medium leading-snug tracking-tight text-ink text-balance">
-                {turn.q}
-              </h2>
-              <AgentTurn events={turn.events} running={turn.running} onOpenProtocol={onOpenProtocol} />
+            <div key={i} className="flex flex-col gap-5">
+              {/* you — a glass bubble on the right */}
+              <div className="flex justify-end pl-12">
+                <div className="glass max-w-full whitespace-pre-wrap break-words rounded-[20px] rounded-br-md px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+                  {turn.q}
+                </div>
+              </div>
+
+              {/* claymore — open prose on the left, marked with the brand glyph */}
+              <div className="flex flex-col gap-2.5">
+                <div className="flex items-center gap-1.5">
+                  <BrandMark size={15} />
+                  <span className="font-serif text-[13.5px] leading-none text-muted">claymore</span>
+                </div>
+                <AgentTurn events={turn.events} running={turn.running} onOpenProtocol={onOpenProtocol} />
+              </div>
             </div>
           ))}
           <div ref={endRef} />
         </div>
       </div>
 
-      <div className="border-t border-line/70 px-6 py-4">
+      <div className="px-6 pb-5 pt-1">
         <div className="mx-auto max-w-[720px]">
           <AskBox
             value={value}

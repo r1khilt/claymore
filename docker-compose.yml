@@ -6,8 +6,9 @@ services:
     image: falkordb/falkordb:latest
     container_name: claymore-falkordb
     ports:
-      - "6379:6379"     # Redis-protocol; Graphiti talks to this
-      - "3000:3000"     # FalkorDB browser UI
+      # Loopback-only: FalkorDB has no auth; never expose the lab graph to the LAN.
+      - "127.0.0.1:6379:6379"     # Redis-protocol; Graphiti talks to this
+      - "127.0.0.1:3000:3000"     # FalkorDB browser UI
     volumes:
       - falkordb_data:/data
     healthcheck:
@@ -24,7 +25,7 @@ services:
       POSTGRES_PASSWORD: claymore
       POSTGRES_DB: claymore
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -39,7 +40,7 @@ services:
     # Separate Redis for the Arq job queue + caches, kept off FalkorDB's port
     # so graph load and queue load don't contend.
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:

@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     """Optional Composio user id override. Empty uses ``WEB_USER_ID`` so a local install only
     needs ``COMPOSIO_API_KEY``; Composio Sessions create the managed OAuth connections."""
     composio_slack_version: str = "20260512_00"
-    composio_gmail_version: str = "20260703_00"
-    composio_github_version: str = "20260703_00"
-    composio_notion_version: str = "20260703_00"
+    composio_gmail_version: str = "20260702_01"
+    composio_github_version: str = "20260702_00"
+    composio_notion_version: str = "20260702_00"
     """Pinned toolkit schemas. These differ by provider; Claymore parses their outputs in Python,
     so direct execution must never silently float to a new response shape."""
     composio_sync_days: int = Field(default=30, ge=1, le=365)

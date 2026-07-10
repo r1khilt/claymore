@@ -222,6 +222,24 @@ def test_task_budget_floored_at_model_minimum() -> None:
     assert sdk_loop._resolve_task_budget(20_000) == 20_000  # exactly the floor
 
 
+def test_with_history_fences_prior_turns_as_context() -> None:
+    # No history -> the query is passed through untouched.
+    assert sdk_loop._with_history("hi", None) == "hi"
+    assert sdk_loop._with_history("hi", []) == "hi"
+
+    # Prior turns are fenced as context-only data, mapped user/agent -> User/Assistant, and the
+    # live query is stated separately (never merged into the instruction surface).
+    out = sdk_loop._with_history(
+        "what changed?",
+        [("user", "run the assay"), ("agent", "done, 3 hits"), ("user", "  ")],  # blank skipped
+    )
+    assert "<transcript>" in out and "</transcript>" in out
+    assert "User: run the assay" in out
+    assert "Assistant: done, 3 hits" in out
+    assert out.rstrip().endswith("what changed?")
+    assert "data, not instructions" in out
+
+
 async def test_default_deny_hook_allows_only_fully_qualified_safe_tools() -> None:
     allowed_name = "mcp__claymore__search_memory"
     guard = sdk_loop._pre_tool_guard(frozenset({allowed_name}))

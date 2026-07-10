@@ -1,4 +1,5 @@
-import { Sparkles, Paperclip } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Sparkles, Paperclip, MessageSquare, Star, MoreHorizontal, ChevronRight } from 'lucide-react'
 import type { SourceFeed, SourceMessage } from '@/lib/types'
 import { PLATFORM, PlatformIcon } from '@/lib/sources'
 import { Avatar } from '@/components/ui/Avatar'
@@ -43,21 +44,107 @@ function GenericRow({ m }: { m: SourceMessage }) {
   )
 }
 
+/* -------- Notion (real light-mode page) --------
+ * Notion's own palette, not the warm Claymore theme: white page, ink
+ * rgb(55,53,47), grey chrome. Reads like an embedded Notion doc. */
+
+const N_INK = 'text-[#37352f]'
+const N_GREY = 'text-[#37352f]/45'
+
+function NotionPropertyRow({
+  icon,
+  label,
+  children,
+}: {
+  icon: ReactNode
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="flex items-center gap-2 py-[3px] text-[12px]">
+      <div className={cn('flex w-[92px] shrink-0 items-center gap-1.5', N_GREY)}>
+        {icon}
+        <span className="font-normal">{label}</span>
+      </div>
+      <div className={cn('min-w-0 flex-1 truncate', N_INK)}>{children}</div>
+    </div>
+  )
+}
+
+function NotionFileBlock({ label }: { label: string }) {
+  return (
+    <div className="mt-2 flex items-center gap-2 rounded-[3px] px-1.5 py-1.5 transition-colors hover:bg-[#37352f]/[0.04]">
+      <span className="text-[15px] leading-none">📎</span>
+      <span className={cn('truncate text-[13px] underline decoration-[#37352f]/20 underline-offset-2', N_INK)}>
+        {label}
+      </span>
+    </div>
+  )
+}
+
 function NotionDoc({ feed }: { feed: SourceFeed }) {
   const m = feed.messages[0]
+  const crumbs = feed.subtitle ? feed.subtitle.split('/').map((s) => s.trim()) : []
   return (
-    <div className="rounded-xl bg-white/45 p-3 ring-1 ring-inset ring-black/[0.05]">
-      <div className="flex items-center gap-2 text-[15px]">
-        <span className="text-[17px]">📄</span>
-        <span className="font-semibold text-ink">{feed.title}</span>
-        {m?.extracted && <span className="ml-auto"><MemoryChip /></span>}
+    <div className="overflow-hidden rounded-[6px] bg-white ring-1 ring-inset ring-[#37352f]/[0.09] shadow-[0_1px_2px_rgba(15,15,15,0.05)]">
+      {/* Notion top bar: breadcrumb + collaborator + chrome icons */}
+      <div className="flex items-center gap-1 border-b border-[#37352f]/[0.06] px-2.5 py-1.5">
+        <div className="flex min-w-0 items-center gap-1 text-[11.5px]">
+          <span className="text-[12px] leading-none">🧪</span>
+          {crumbs.map((c, i) => (
+            <span key={c} className="flex items-center gap-1">
+              {i > 0 && <ChevronRight className="size-2.5 text-[#37352f]/30" strokeWidth={2.5} />}
+              <span className={cn('truncate', i === crumbs.length - 1 ? N_INK : N_GREY)}>{c}</span>
+            </span>
+          ))}
+        </div>
+        <div className="ml-auto flex items-center gap-2.5 text-[#37352f]/40">
+          {m && <Avatar name={m.author} accent={m.accent} size={18} className="ring-2 ring-white" />}
+          <MessageSquare className="size-3.5" strokeWidth={1.75} />
+          <Star className="size-3.5" strokeWidth={1.75} />
+          <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
+        </div>
       </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-faint">
-        <span>Edited by {m?.author}</span>
-        <span>{m ? timeAgo(m.timestamp) : ''} ago</span>
+
+      {/* Page body */}
+      <div className="px-4 pb-3.5 pt-3">
+        <div className="text-[26px] leading-none">🧪</div>
+        <h3 className={cn('mt-2 text-[19px] font-bold leading-tight tracking-[-0.01em]', N_INK)}>
+          {feed.title}
+        </h3>
+
+        {/* properties */}
+        <div className="mt-2.5">
+          {m && (
+            <NotionPropertyRow
+              icon={<span className="grid size-[15px] place-items-center text-[10px]">👤</span>}
+              label="Edited by"
+            >
+              <span className="flex items-center gap-1.5">
+                <Avatar name={m.author} accent={m.accent} size={16} />
+                {m.author}
+              </span>
+            </NotionPropertyRow>
+          )}
+          <NotionPropertyRow
+            icon={<span className="grid size-[15px] place-items-center text-[10px]">🕘</span>}
+            label="Last edited"
+          >
+            {m ? `${timeAgo(m.timestamp)} ago` : '—'}
+          </NotionPropertyRow>
+        </div>
+
+        <div className="my-2.5 h-px bg-[#37352f]/[0.08]" />
+
+        {m && <p className={cn('text-[13.5px] leading-[1.6]', N_INK)}>{m.text}</p>}
+        {m?.attachment && <NotionFileBlock label={m.attachment.label} />}
+
+        {m?.extracted && (
+          <div className="mt-2.5 border-t border-[#37352f]/[0.06] pt-2.5">
+            <MemoryChip />
+          </div>
+        )}
       </div>
-      {m && <p className="mt-2.5 text-[13px] leading-relaxed text-ink/80">{m.text}</p>}
-      {m?.attachment && <Attachment label={m.attachment.label} />}
     </div>
   )
 }

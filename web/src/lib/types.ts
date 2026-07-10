@@ -104,13 +104,26 @@ export interface LabNotification {
 }
 
 export interface Connector {
+  /** Stable backend id when a concrete Composio account exists. */
+  id?: string
   platform: SourcePlatform
   name: string
   connected: boolean
+  status?: ConnectorStatus
   account?: string
   lastSync?: string
   episodes?: number
+  /** Safe, user-facing summary only. Provider responses and credentials never belong here. */
+  error?: string
 }
+
+export type ConnectorStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'syncing'
+  | 'reauth_required'
+  | 'error'
 
 export interface Entity {
   id: string

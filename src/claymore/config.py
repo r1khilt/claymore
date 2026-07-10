@@ -40,7 +40,18 @@ class Settings(BaseSettings):
     # --- ingestion (Phase 1) ---
     composio_api_key: SecretStr = SecretStr("")
     composio_user_id: str = ""
-    """Composio entity id the lab's connected accounts live under (one per connected user)."""
+    """Optional Composio user id override. Empty uses ``WEB_USER_ID`` so a local install only
+    needs ``COMPOSIO_API_KEY``; Composio Sessions create the managed OAuth connections."""
+    composio_slack_version: str = "20260512_00"
+    composio_gmail_version: str = "20260703_00"
+    composio_github_version: str = "20260703_00"
+    composio_notion_version: str = "20260703_00"
+    """Pinned toolkit schemas. These differ by provider; Claymore parses their outputs in Python,
+    so direct execution must never silently float to a new response shape."""
+    composio_sync_days: int = Field(default=30, ge=1, le=365)
+    """Default first-sync window. Provider-side filters keep the window bounded before paging."""
+    composio_cache_dir: str = ""
+    """Optional Composio SDK cache directory. Empty uses Claymore's local state directory."""
     granola_api_key: SecretStr = SecretStr("")
     codelogs_paths: tuple[str, ...] = ()
     lab_roster_json: str = ""

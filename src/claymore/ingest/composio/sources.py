@@ -7,7 +7,7 @@ a **parser** that maps one raw item dict → :class:`~claymore.ingest.normalize.
 
 Everything here is deliberately defensive because the payloads are *untrusted* (SECURITY.md
 rule 1 / CLAUDE.md §2.7) and their exact shapes must be **calibrated against a live Composio
-call** — the field names below are best-effort guesses (see module-level ``# CALIBRATE`` notes).
+call** and held stable with provider-specific toolkit-version pins.
 So a parser never trusts a field to exist or to be the right type:
 
 - **author is never guessed** (hard rule 1). The parser sets ``author=UNKNOWN_AUTHOR`` and
@@ -137,6 +137,16 @@ def _content_hash(*parts: str) -> str:
     return digest.hexdigest()
 
 
+def _visibility_fingerprint(visibility: Visibility) -> str:
+    """Stable ACL material included in an Episode version hash.
+
+    A provider item whose text is unchanged but whose sharing changes must produce a new Episode;
+    otherwise the append-only log/graph would retain the stale, potentially wider visibility.
+    """
+    allowed = ",".join(sorted(visibility.allowed_user_ids))
+    return f"lab_wide={visibility.lab_wide};allowed={allowed};label={visibility.source_label}"
+
+
 def _from_epoch(value: float) -> datetime | None:
     """Epoch → aware UTC. Values ``> 1e12`` are treated as milliseconds (Gmail internalDate)."""
     if value > 1e12:
@@ -227,6 +237,7 @@ def parse_slack(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
         return None
     text = _first_str(raw, "text", "message", "body")
     raw_author = _first_str(raw, "username", "user_name", "user", "user_id")
+    visibility = _slack_visibility(raw)
     return Episode(
         lab_id=lab_id,
         source_platform=SourcePlatform.SLACK,
@@ -235,9 +246,9 @@ def parse_slack(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
         timestamp=timestamp,
         text=text,
         refs=_refs(raw, ("thread_ts", "permalink", "files")),
-        visibility=_slack_visibility(raw),
+        visibility=visibility,
         is_untrusted=True,
-        source_hash=_content_hash("slack", source_id, text),
+        source_hash=_content_hash("slack", source_id, text, _visibility_fingerprint(visibility)),
         extra=_base_extra(raw_author),
     )
 
@@ -260,6 +271,7 @@ def parse_gmail(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
     text = _first_str(raw, "messageText", "body", "snippet", "preview", "text")
     raw_author = _first_str(raw, "sender", "from")
     participants = _participants(raw, ("sender", "from", "to", "cc"))
+    visibility = Visibility(lab_wide=False, allowed_user_ids=participants, source_label="email")
     return Episode(
         lab_id=lab_id,
         source_platform=SourcePlatform.GMAIL,
@@ -269,9 +281,11 @@ def parse_gmail(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
         text=text,
         refs=_refs(raw, ("threadId", "thread_id")),
         # An email is never lab-wide: only its participants (fail-closed to empty if none found).
-        visibility=Visibility(lab_wide=False, allowed_user_ids=participants, source_label="email"),
+        visibility=visibility,
         is_untrusted=True,
-        source_hash=_content_hash("gmail", source_id, subject, text),
+        source_hash=_content_hash(
+            "gmail", source_id, subject, text, _visibility_fingerprint(visibility)
+        ),
         extra=_base_extra(raw_author, subject=subject),
     )
 
@@ -335,7 +349,7 @@ def _parse_github_commit(
         refs=tuple(ref for ref in (full_name, sha, html_url) if ref),
         visibility=visibility,
         is_untrusted=True,
-        source_hash=_content_hash(full_name, sha, message),
+        source_hash=_content_hash(full_name, sha, message, _visibility_fingerprint(visibility)),
         extra=_base_extra(
             raw_author, repo=full_name, sha=sha, private="true" if private else "false"
         ),
@@ -362,6 +376,17 @@ def _inject_owner(episode: Episode, owner_user_id: str | None) -> Episode:
         source_label=vis.source_label,
     )
     return episode.model_copy(update={"visibility": new_vis})
+
+
+def _finalize_visibility_hash(episode: Episode) -> Episode:
+    """Bind the normalized/owner-injected ACL into the final durable Episode identity."""
+    return episode.model_copy(
+        update={
+            "source_hash": _content_hash(
+                episode.source_hash or "", _visibility_fingerprint(episode.visibility)
+            )
+        }
+    )
 
 
 def _inject_github_owner(episode: Episode, owner_user_id: str | None) -> Episode:
@@ -398,7 +423,7 @@ def github_episode(
     episode = _inject_github_owner(episode, owner_user_id)
     if resolver is not None:
         episode = resolver.resolve_episode(episode)
-    return episode
+    return _finalize_visibility_hash(episode)
 
 
 def parse_github(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
@@ -431,12 +456,60 @@ def _notion_title(properties: Any) -> str:
     return ""
 
 
+def notion_block_text(data: Any, *, max_chars: int = 64_000) -> str:
+    """Flatten a Notion block-content response into bounded readable text.
+
+    Composio has returned both native Notion blocks and friendlier shaped/markdown envelopes over
+    time. This walker accepts either without treating ids, URLs, annotations, or other metadata as
+    page prose. Rich-text objects prefer ``plain_text`` and stop there, avoiding duplicate
+    ``text.content`` traversal.
+    """
+    parts: list[str] = []
+    size = 0
+
+    def add(value: str) -> None:
+        nonlocal size
+        cleaned = value.strip()
+        if not cleaned or size >= max_chars:
+            return
+        remaining = max_chars - size
+        part = cleaned[:remaining]
+        parts.append(part)
+        size += len(part) + 1
+
+    def walk(value: Any) -> None:
+        if size >= max_chars:
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if not isinstance(value, Mapping):
+            return
+        plain = value.get("plain_text")
+        if isinstance(plain, str):
+            add(plain)
+            return
+        for key in ("markdown", "content"):
+            direct = value.get(key)
+            if isinstance(direct, str):
+                add(direct)
+        for key, child in value.items():
+            if key in {"plain_text", "markdown", "content"}:
+                continue
+            if isinstance(child, (Mapping, list)):
+                walk(child)
+
+    walk(data)
+    return "\n".join(parts)
+
+
 def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
     """Notion page → Episode (calibrated against the live ``NOTION_FETCH_DATA`` response shape).
 
-    ``NOTION_FETCH_DATA`` returns page **metadata**, not block content, so the page **title** is the
-    episode text (full body needs a per-page ``NOTION_FETCH_ALL_BLOCK_CONTENTS`` call — a later,
-    additive enrichment). Mapping:
+    ``NOTION_FETCH_DATA`` returns page metadata. The live hub enriches each recent page with
+    ``NOTION_FETCH_ALL_BLOCK_CONTENTS`` under ``_claymore_content``; direct parser callers safely
+    fall back to the title when that enrichment is absent. Mapping:
 
     - Only ``object == "page"`` items become episodes; ``database``/``data_source`` results are
       schema, not lab memory, and are skipped (``None``). A result with no ``object`` field is
@@ -463,7 +536,8 @@ def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
     if timestamp is None:
         return None
     title = _notion_title(raw.get("properties")) or _first_str(raw, "title")
-    text = title  # metadata-only endpoint: title is the episode body until block content is fetched
+    body = _first_str(raw, "_claymore_content", "markdown", "content")
+    text = "\n\n".join(part for part in (title, body) if part).strip()
     raw_author = _as_str(_dig(raw, ("created_by", "name"))) or _as_str(
         _dig(raw, ("created_by", "id"))
     )
@@ -483,7 +557,9 @@ def parse_notion(raw: Mapping[str, Any], lab_id: LabId) -> Episode | None:
         refs=_refs(raw, ("url", "public_url")),
         visibility=visibility,
         is_untrusted=True,
-        source_hash=_content_hash("notion", source_id, title, text),
+        source_hash=_content_hash(
+            "notion", source_id, title, text, _visibility_fingerprint(visibility)
+        ),
         extra=_base_extra(raw_author, title=title),
     )
 
@@ -543,6 +619,7 @@ GITHUB_COMMITS_PATH = ("commits",)
 # All shapes are live-calibrated against the connected account's tool schemas.
 SLACK_CHANNELS_SLUG = "SLACK_LIST_ALL_CHANNELS"
 SLACK_HISTORY_SLUG = "SLACK_FETCH_CONVERSATION_HISTORY"
+SLACK_THREAD_SLUG = "SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION"
 SLACK_CHANNELS_PATH = ("channels",)
 SLACK_MESSAGES_PATH = ("messages",)
 SLACK_CURSOR_PATH = ("response_metadata", "next_cursor")
@@ -551,6 +628,9 @@ SLACK_CURSOR_PATH = ("response_metadata", "next_cursor")
 # group DMs (their whole is_private/is_im branch + owner-injection would be dead in production). Ask
 # for all four; the connected account's granted scopes govern what actually comes back.
 SLACK_CHANNEL_TYPES = "public_channel,private_channel,mpim,im"
+
+# Page discovery returns metadata; this read-only follow-up provides the actual lab-memory body.
+NOTION_BLOCKS_SLUG = "NOTION_FETCH_ALL_BLOCK_CONTENTS"
 
 
 # All four slugs + envelope paths below are **live-calibrated** against the connected account's tool
@@ -799,7 +879,7 @@ def to_episode(
         episode = _resolve_visibility_participants(episode, spec.platform, resolver)
     if owner_user_id:
         episode = _inject_owner(episode, owner_user_id)
-    return episode
+    return _finalize_visibility_hash(episode)
 
 
 def _resolve_visibility_participants(

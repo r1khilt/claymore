@@ -1,4 +1,4 @@
-"""[Pipes] Composio ``ConnectorHub`` adapter — Slack, Gmail, GitHub, Notion, Drive, Docs.
+"""[Pipes] Composio ``ConnectorHub`` adapter — Slack, Gmail, GitHub, and Notion.
 
 Implements :class:`claymore.ports.ConnectorHub` over Composio managed OAuth (per-user connected
 accounts). ``backfill``/``incremental`` are **streaming async generators** — they page the
@@ -17,23 +17,22 @@ Operational notes:
 - **15-min polling caveat (§5):** Composio-managed OAuth apps default to ~15-minute trigger
   polling. ``incremental`` is therefore a *poll* — call it on a schedule; register your own
   OAuth app per provider if you need fresher-than-15-min sync.
-- **Backfill cost (R6):** a full backfill blows past the free 1k tool executions fast. Scope
-  the pilot to a small window (recent history / a few channels); dedup + the resumable
-  checkpoint below mean you never re-pay for the same page.
+- **Backfill cost (R6):** the application supplies a bounded first-sync window and provider-side
+  filters wherever the provider supports them. Durable dedup/checkpoints prevent re-extraction.
 - **Resumability:** :meth:`checkpoint` exposes the last source-time seen per (lab, source);
   ``incremental`` resumes from it. A caller can persist it (Postgres) and reconstruct a hub that
   continues where it left off.
 
-TODO(Phase 1, live): confirm every action slug + response-envelope path in ``sources.py``
-against a live Composio call; verify signed ``webhook-signature`` where a push path replaces the
-poll (SECURITY.md §8); wire the connected-account/user mapping for multi-user labs.
+Tool schemas are pinned per provider because this adapter parses response fields in Python.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -42,9 +41,11 @@ from claymore.domain import LabId, SourcePlatform
 from claymore.ingest.composio.sources import (
     GITHUB_COMMITS_SLUG,
     GITHUB_REPOS_SLUG,
+    NOTION_BLOCKS_SLUG,
     SLACK_CHANNEL_TYPES,
     SLACK_CHANNELS_SLUG,
     SLACK_HISTORY_SLUG,
+    SLACK_THREAD_SLUG,
     SourceSpec,
     _first_str,
     _github_private_flag,
@@ -54,6 +55,7 @@ from claymore.ingest.composio.sources import (
     github_commits,
     github_episode,
     github_repos,
+    notion_block_text,
     slack_channels,
     slack_enrich_message,
     slack_next_cursor,
@@ -74,15 +76,9 @@ logger = structlog.get_logger(__name__)
 # this bounds *cost/time* (R6). Raise deliberately for a large calibrated backfill.
 _MAX_PAGES = 10_000
 
-# Cap on repos scanned per GitHub backfill (the 2-level flow enumerates every repo the connected
-# account can see). Bounds cost/time on an account with hundreds of repos; truncation is LOGGED,
-# never silent. Raise deliberately for a large calibrated backfill.
-_GITHUB_MAX_REPOS = 50
 
-# Same bound for the Slack 2-level flow (enumerate channels → page each channel's history): cap the
-# channels scanned per backfill so a workspace with thousands of channels can't blow the cost/time
-# budget (R6). Truncation is LOGGED, never silent. Raise deliberately for a large calibrated run.
-_SLACK_MAX_CHANNELS = 100
+class ComposioExecutionError(RuntimeError):
+    """A provider read failed or returned an unsuccessful Composio envelope."""
 
 
 class _StreamingHub(ConnectorHub):
@@ -120,10 +116,27 @@ def _response_data(response: Any) -> Mapping[str, Any]:
     forward-compat with a typed response object.
     """
     if isinstance(response, Mapping):
+        successful = response.get("successful")
+        error = response.get("error")
         data = response.get("data")
     else:
+        successful = getattr(response, "successful", None)
+        error = getattr(response, "error", None)
         data = getattr(response, "data", None)
-    return data if isinstance(data, Mapping) else {}
+    if successful is False or (isinstance(error, str) and error.strip()):
+        raise ComposioExecutionError("Composio reported an unsuccessful tool execution")
+    if not isinstance(data, Mapping):
+        raise ComposioExecutionError("Composio returned a malformed tool response")
+    return data
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, ComposioExecutionError):
+        return False
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in {408, 409, 425, 429} or status >= 500
+    return True
 
 
 class ComposioConnectorHub(_StreamingHub):
@@ -141,6 +154,7 @@ class ComposioConnectorHub(_StreamingHub):
         resolver: IdentityResolver | None = None,
         user_id: str | None = None,
         connected_account_id: str | None = None,
+        owner_user_id: str | None = None,
         page_size: int | None = None,
     ) -> None:
         super().__init__()
@@ -148,24 +162,40 @@ class ComposioConnectorHub(_StreamingHub):
         self._resolver = resolver
         self._user_id = user_id
         self._connected_account_id = connected_account_id
+        # Composio's session user and Claymore's visibility owner are different namespaces.
+        self._owner_user_id = owner_user_id
         self._page_size = page_size
         self._client_obj: Any = None
 
     def _client(self) -> Any:
         """Build the Composio client on first use (lazy import keeps the SDK optional)."""
         if self._client_obj is None:
+            from claymore.local_store import local_dir
+
+            cache = (
+                Path(self._settings.composio_cache_dir).expanduser()
+                if self._settings.composio_cache_dir.strip()
+                else local_dir() / "composio-cache"
+            )
+            cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.environ["COMPOSIO_CACHE_DIR"] = str(cache)
             from composio import Composio
 
             self._client_obj = Composio(api_key=self._settings.composio_api_key.get_secret_value())
         return self._client_obj
 
-    def initiate_connection(self, user_id: str, toolkit: str) -> Any:
-        """Thin passthrough so the maintainer can generate an OAuth authorize link later.
-
-        Returns the SDK's connection-request object (has the redirect URL). OAuth flows are not
-        implemented here — this only forwards to ``connected_accounts.initiate``.
-        """
-        return self._client().connected_accounts.initiate(user_id=user_id, toolkit=toolkit)
+    def _version_for(self, slug: str) -> str:
+        toolkit = slug.partition("_")[0].casefold()
+        versions = {
+            "slack": self._settings.composio_slack_version,
+            "gmail": self._settings.composio_gmail_version,
+            "github": self._settings.composio_github_version,
+            "notion": self._settings.composio_notion_version,
+        }
+        try:
+            return versions[toolkit]
+        except KeyError:
+            raise ValueError(f"unsupported Composio toolkit for {slug!r}") from None
 
     async def backfill(
         self, lab_id: LabId, source: SourcePlatform, since: datetime | None = None
@@ -184,48 +214,44 @@ class ComposioConnectorHub(_StreamingHub):
 
         spec = get_spec(source)
         page_size = spec.default_page_size if self._page_size is None else self._page_size
-        client = self._client()
         cursor: str | None = None
         seen_cursors: set[str] = set()
 
         for _ in range(_MAX_PAGES):
             # spec.extra_args carries any REQUIRED non-pagination input (e.g. Notion's fetch_type).
             arguments: dict[str, Any] = {spec.limit_arg: page_size, **spec.extra_args}
+            if source is SourcePlatform.GMAIL:
+                arguments["include_payload"] = True
+                if since is not None:
+                    arguments["query"] = f"after:{ensure_aware(since).strftime('%Y/%m/%d')}"
             if cursor:
                 arguments[spec.cursor_arg] = cursor
-            try:
-                # Sync SDK → worker thread: a fetch must never block the event loop (see
-                # _composio_execute).
-                response = await asyncio.to_thread(
-                    client.tools.execute,
-                    spec.action_slug,
-                    arguments=arguments,
-                    user_id=self._user_id,
-                    connected_account_id=self._connected_account_id,
-                    # Manual execution requires a pinned toolkit version; "latest" is rejected.
-                    # We skip the check to always run the newest tool (fine for the pilot; a
-                    # prod deploy should pin COMPOSIO_TOOLKIT_VERSION_* for reproducibility).
-                    dangerously_skip_version_check=True,
-                )
-            except Exception as exc:  # a page fetch failing must not crash the caller
-                logger.warning(
-                    "composio.execute_failed",
-                    platform=source,
-                    slug=spec.action_slug,
-                    error=str(exc),
-                )
-                return
-
-            data = _response_data(response)
+            data = await self._composio_execute(spec.action_slug, arguments)
             items = extract_items(spec, data)
             for raw in items:
+                if source is SourcePlatform.NOTION:
+                    # Filter by page metadata before paying a second read for its block body.
+                    preliminary = to_episode(
+                        spec,
+                        raw,
+                        lab_id,
+                        since=since,
+                        resolver=self._resolver,
+                        owner_user_id=self._owner_user_id,
+                    )
+                    if preliminary is None:
+                        continue
+                    block_data = await self._composio_execute(
+                        NOTION_BLOCKS_SLUG, {"block_id": preliminary.source_id}
+                    )
+                    raw = {**raw, "_claymore_content": notion_block_text(block_data)}
                 episode = to_episode(
                     spec,
                     raw,
                     lab_id,
                     since=since,
                     resolver=self._resolver,
-                    owner_user_id=self._user_id,  # restricted-page owner injection (Notion, R13)
+                    owner_user_id=self._owner_user_id,
                 )
                 if episode is not None:
                     yield episode
@@ -237,29 +263,33 @@ class ComposioConnectorHub(_StreamingHub):
             seen_cursors.add(cursor)
         logger.warning("composio.max_pages_reached", platform=source, max_pages=_MAX_PAGES)
 
-    async def _composio_execute(
-        self, slug: str, arguments: dict[str, Any]
-    ) -> Mapping[str, Any] | None:
-        """Run one Composio tool call, returning the ``data`` mapping or ``None`` if the call itself
-        failed (a fetch failure must be *skippable*, not crash the backfill). Shared by the GitHub
-        and Slack multi-level flows (both page a source with a per-call, skippable fetch).
+    async def _composio_execute(self, slug: str, arguments: dict[str, Any]) -> Mapping[str, Any]:
+        """Execute one pinned read call with bounded transient retries.
 
-        The Composio SDK is synchronous — the call runs in a worker thread so a multi-second
-        fetch never blocks the event loop (a blocked loop freezes every webhook and admin
-        request the server is concurrently handling)."""
-        try:
-            response = await asyncio.to_thread(
-                self._client().tools.execute,
-                slug,
-                arguments=arguments,
-                user_id=self._user_id,
-                connected_account_id=self._connected_account_id,
-                dangerously_skip_version_check=True,
-            )
-        except Exception as exc:  # a page fetch failing must not crash the caller
-            logger.warning("composio.execute_failed", slug=slug, error=str(exc))
-            return None
-        return _response_data(response)
+        Failed provider envelopes are permanent and surface to the sync job. Transport/rate-limit
+        failures retry three times without ever logging provider payloads or credentials.
+        """
+        for attempt in range(3):
+            try:
+                response = await asyncio.to_thread(
+                    self._client().tools.execute,
+                    slug,
+                    arguments=arguments,
+                    user_id=self._user_id,
+                    connected_account_id=self._connected_account_id,
+                    version=self._version_for(slug),
+                )
+                return _response_data(response)
+            except Exception as exc:
+                if attempt == 2 or not _is_transient(exc):
+                    logger.warning(
+                        "composio.execute_failed",
+                        slug=slug,
+                        error_type=type(exc).__name__,
+                    )
+                    raise ComposioExecutionError(f"Composio read failed for {slug}") from exc
+                await asyncio.sleep(0.5 * (2**attempt))
+        raise AssertionError("unreachable")
 
     async def _github_backfill(
         self, lab_id: LabId, since: datetime | None
@@ -267,32 +297,23 @@ class ComposioConnectorHub(_StreamingHub):
         """2-level GitHub backfill: enumerate the account's repos, then stream each repo's commits.
 
         Streams throughout (never accumulates a repo's — let alone the account's — full commit
-        history). Bounds: ``_GITHUB_MAX_REPOS`` repos scanned and ``_MAX_PAGES`` commit pages **per
-        repo**, both logged on truncation. A repo whose commit fetch fails is skipped-with-log and
-        never aborts the whole backfill. Private-repo commits get the connecting user injected into
-        their allowlist (``owner_user_id=self._user_id``) so the owner can retrieve their own work.
+        history), with ``_MAX_PAGES`` as a defensive pagination bound. Private-repo commits get the
+        Claymore owner injected into their allowlist so the owner can retrieve their own work.
         """
         page_size = (
             get_spec(SourcePlatform.GITHUB).default_page_size
             if self._page_size is None
             else self._page_size
         )
-        repos_scanned = 0
         async for full_name, private in self._github_iter_repos(page_size):
-            if repos_scanned >= _GITHUB_MAX_REPOS:
-                logger.warning(
-                    "composio.github_repos_truncated", max_repos=_GITHUB_MAX_REPOS, lab_id=lab_id
-                )
-                return
-            repos_scanned += 1
-            async for raw_commit in self._github_iter_commits(full_name, page_size):
+            async for raw_commit in self._github_iter_commits(full_name, page_size, since):
                 episode = github_episode(
                     raw_commit,
                     full_name,
                     private,
                     lab_id,
                     since=since,
-                    owner_user_id=self._user_id,
+                    owner_user_id=self._owner_user_id,
                     resolver=self._resolver,
                 )
                 if episode is not None:
@@ -304,8 +325,6 @@ class ComposioConnectorHub(_StreamingHub):
             data = await self._composio_execute(
                 GITHUB_REPOS_SLUG, {"per_page": page_size, "page": page}
             )
-            if data is None:  # enumeration call failed — stop (nothing to page from)
-                return
             repos = github_repos(data)
             if not repos:  # empty page ⇒ last page (GitHub has no next_cursor)
                 return
@@ -314,7 +333,7 @@ class ComposioConnectorHub(_StreamingHub):
         logger.warning("composio.max_pages_reached", platform="github_repos", max_pages=_MAX_PAGES)
 
     async def _github_iter_commits(
-        self, full_name: str, page_size: int
+        self, full_name: str, page_size: int, since: datetime | None
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Yield raw commit dicts for one repo (page-number pagination; failure skips the repo)."""
         owner, _, repo = full_name.partition("/")
@@ -322,13 +341,18 @@ class ComposioConnectorHub(_StreamingHub):
             logger.warning("composio.github_bad_full_name", full_name=full_name)
             return
         for page in range(1, _MAX_PAGES + 1):
+            arguments: dict[str, Any] = {
+                "owner": owner,
+                "repo": repo,
+                "per_page": page_size,
+                "page": page,
+            }
+            if since is not None:
+                arguments["since"] = ensure_aware(since).isoformat().replace("+00:00", "Z")
             data = await self._composio_execute(
                 GITHUB_COMMITS_SLUG,
-                {"owner": owner, "repo": repo, "per_page": page_size, "page": page},
+                arguments,
             )
-            if data is None:  # this repo's fetch failed — skip it, don't abort the backfill
-                logger.warning("composio.github_commits_failed", repo=full_name)
-                return
             commits = github_commits(data)
             if not commits:  # empty page ⇒ last page
                 return
@@ -350,25 +374,14 @@ class ComposioConnectorHub(_StreamingHub):
         we enumerate channels first (each with its privacy) and inject that context onto every
         message before parsing — the shared ``to_episode`` path then derives visibility (R13).
         Streams throughout (never accumulates a channel's — let alone the workspace's — full
-        history). Bounds: ``_SLACK_MAX_CHANNELS`` channels scanned and ``_MAX_PAGES`` history pages
-        **per channel**, both logged on truncation. A channel whose history fetch fails (e.g. the
-        connected account isn't a member) is skipped-with-log, never aborting the backfill. The
-        connecting user is injected into a restricted (private / DM) channel's allowlist
-        (``owner_user_id=self._user_id``) so they can retrieve their own conversations.
+        history). ``_MAX_PAGES`` is the defensive pagination bound per channel. The Claymore owner
+        is injected into a restricted (private / DM) channel's allowlist so they can retrieve their
+        own conversations, while public channels remain lab-wide.
         """
         spec = get_spec(SourcePlatform.SLACK)
         page_size = spec.default_page_size if self._page_size is None else self._page_size
-        channels_scanned = 0
         async for channel_ctx in self._slack_iter_channels(page_size):
-            if channels_scanned >= _SLACK_MAX_CHANNELS:
-                logger.warning(
-                    "composio.slack_channels_truncated",
-                    max_channels=_SLACK_MAX_CHANNELS,
-                    lab_id=lab_id,
-                )
-                return
-            channels_scanned += 1
-            async for raw_msg in self._slack_iter_history(channel_ctx["channel"], page_size):
+            async for raw_msg in self._slack_iter_history(channel_ctx["channel"], page_size, since):
                 # Overlay the enumerated channel's context, stripping any channel/ACL keys the
                 # untrusted message carries so it cannot influence its own scope (R13). This is the
                 # sole authority on visibility; a message can't assert itself lab-wide.
@@ -383,10 +396,32 @@ class ComposioConnectorHub(_StreamingHub):
                     lab_id,
                     since=since,
                     resolver=self._resolver,
-                    owner_user_id=self._user_id,
+                    owner_user_id=self._owner_user_id,
                 )
                 if episode is not None:
                     yield episode
+                reply_count = raw_msg.get("reply_count")
+                thread_ts = _first_str(raw_msg, "thread_ts", "ts")
+                if (
+                    isinstance(reply_count, int)
+                    and not isinstance(reply_count, bool)
+                    and reply_count > 0
+                    and thread_ts
+                ):
+                    async for reply in self._slack_iter_thread(
+                        channel_ctx["channel"], thread_ts, page_size
+                    ):
+                        enriched_reply = slack_enrich_message(reply, channel_ctx)
+                        reply_episode = to_episode(
+                            spec,
+                            enriched_reply,
+                            lab_id,
+                            since=since,
+                            resolver=self._resolver,
+                            owner_user_id=self._owner_user_id,
+                        )
+                        if reply_episode is not None:
+                            yield reply_episode
 
     async def _slack_iter_channels(self, page_size: int) -> AsyncIterator[dict[str, Any]]:
         """Yield per-channel contexts across the paged channel list (cursor pagination).
@@ -408,8 +443,6 @@ class ComposioConnectorHub(_StreamingHub):
             if cursor:
                 arguments["cursor"] = cursor
             data = await self._composio_execute(SLACK_CHANNELS_SLUG, arguments)
-            if data is None:  # enumeration call failed — stop (nothing to page from)
-                return
             for channel in slack_channels(data):
                 yield channel
             cursor = slack_next_cursor(data)
@@ -421,7 +454,7 @@ class ComposioConnectorHub(_StreamingHub):
         )
 
     async def _slack_iter_history(
-        self, channel_id: str, page_size: int
+        self, channel_id: str, page_size: int, since: datetime | None
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Yield raw message dicts for one channel (cursor pagination; a failed fetch skips it).
 
@@ -433,12 +466,12 @@ class ComposioConnectorHub(_StreamingHub):
         seen_cursors: set[str] = set()
         for _ in range(_MAX_PAGES):
             arguments: dict[str, Any] = {"channel": channel_id, "limit": page_size}
+            if since is not None:
+                arguments["oldest"] = int(ensure_aware(since).timestamp())
+                arguments["inclusive"] = True
             if cursor:
                 arguments["cursor"] = cursor
             data = await self._composio_execute(SLACK_HISTORY_SLUG, arguments)
-            if data is None:  # this channel's fetch failed — skip it, don't abort the backfill
-                logger.warning("composio.slack_history_failed", channel=channel_id)
-                return
             messages = extract_items(spec, data)
             if not messages:  # empty page ⇒ last page
                 return
@@ -451,6 +484,37 @@ class ComposioConnectorHub(_StreamingHub):
         logger.warning(
             "composio.max_pages_reached",
             platform="slack_history",
+            channel=channel_id,
+            max_pages=_MAX_PAGES,
+        )
+
+    async def _slack_iter_thread(
+        self, channel_id: str, thread_ts: str, page_size: int
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Yield replies for one parent message, excluding the parent returned on page one."""
+        spec = get_spec(SourcePlatform.SLACK)
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for _ in range(_MAX_PAGES):
+            arguments: dict[str, Any] = {
+                "channel": channel_id,
+                "ts": thread_ts,
+                "limit": page_size,
+            }
+            if cursor:
+                arguments["cursor"] = cursor
+            data = await self._composio_execute(SLACK_THREAD_SLUG, arguments)
+            messages = extract_items(spec, data)
+            for message in messages:
+                if _first_str(message, "ts") != thread_ts:
+                    yield message
+            cursor = slack_next_cursor(data)
+            if not cursor or cursor in seen_cursors:
+                return
+            seen_cursors.add(cursor)
+        logger.warning(
+            "composio.max_pages_reached",
+            platform="slack_thread",
             channel=channel_id,
             max_pages=_MAX_PAGES,
         )

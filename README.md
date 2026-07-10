@@ -13,7 +13,7 @@ ingest a lab's scattered memory → **ask** and get an *attributed* answer → *
 
 ## What works today (2026-07-09)
 
-The end-to-end **ask** path is **live**: Slack/Gmail/GitHub ingest through Composio into a
+The end-to-end **ask** path is **live**: Slack/Gmail/Notion/GitHub ingest through Composio into a
 Graphiti/FalkorDB temporal graph (identity-resolved, provenance-tagged, Haiku extraction),
 answered with cited, attributed facts — or an honest no-answer when the graph can't ground
 one — over both a Telegram bot (@ClaymoreLabs_bot) and a **web dashboard** (`web/`): a
@@ -41,8 +41,7 @@ Compute-sandbox and wet-lab execution remain gated and later-phase.
 
 ```bash
 git clone https://github.com/r1khilt/claymore.git && cd claymore
-cp .env.example .env            # ANTHROPIC + VOYAGE (real answers), TELEGRAM_* (bot),
-                                # COMPOSIO_* + ADMIN_API_TOKEN (ingest), LAB_ROSTER_JSON (identity)
+cp .env.example .env            # fill ANTHROPIC_API_KEY, VOYAGE_API_KEY, COMPOSIO_API_KEY
 python -m venv .venv && source .venv/bin/activate
 make install                    # pip install -e ".[dev,...]"
 make up                         # falkordb + postgres + redis
@@ -50,19 +49,29 @@ make check                      # ruff + mypy --strict + pytest  (green = safe t
 make run                        # FastAPI on :8000  (GET /healthz)
 ```
 
-Wire the bot: expose :8000 (ngrok), set `PUBLIC_BASE_URL`, register the Telegram webhook
-with `setWebhook(url=.../webhooks/telegram, secret_token=$TELEGRAM_WEBHOOK_SECRET)`, and
-enroll users via `TELEGRAM_ENROLLMENTS=<telegram_id>:<lab>:<user>`. Then pull memory in:
+In a second terminal, start the live dashboard:
 
 ```bash
-curl -X POST localhost:8000/admin/ingest \
-  -H "X-Claymore-Admin-Token: $ADMIN_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"source":"github","days":7}'        # also: gmail, slack, notion
+cd web
+npm install
+VITE_CLAYMORE_LIVE=1 npm run dev   # http://localhost:5173
 ```
 
-**Operational note:** the Graphiti provenance sidecar is in-process until the Postgres state
-layer lands — restarting the server after ingest empties retrieval. Boot once, ingest, demo;
-after a restart, flush the lab graph (`GRAPH.DELETE lab-<id>`) and re-ingest.
+Open **Connectors**, choose **Connect** on Slack, Gmail, Notion, or GitHub, and approve that
+provider in the Composio popup. The card changes to **Connected** when OAuth returns; choose
+**Sync now** to import the bounded initial window into attributed lab memory. Later syncs are
+incremental, and connection/sync state survives an API restart. Composio manages the provider
+OAuth apps, so the local setup needs only `COMPOSIO_API_KEY`—`COMPOSIO_USER_ID` is optional and
+defaults to `WEB_USER_ID`. OAuth consent itself cannot be replaced by an environment key.
+
+To wire the optional Telegram bot, expose :8000 (ngrok), set `PUBLIC_BASE_URL`, register the
+Telegram webhook with `setWebhook(url=.../webhooks/telegram,
+secret_token=$TELEGRAM_WEBHOOK_SECRET)`, and enroll users via
+`TELEGRAM_ENROLLMENTS=<telegram_id>:<lab>:<user>`.
+
+Normalized episodes, connector checkpoints, and the Graphiti provenance/visibility sidecar are
+kept in the private local SQLite state file under `CLAYMORE_LOCAL_DIR` (default `~/.claymore`), so
+connections, deduplication, attributed retrieval, and incremental sync survive API restarts.
 
 ## Layout (see `CLAUDE.md §4`)
 

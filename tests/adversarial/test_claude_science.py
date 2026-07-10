@@ -114,7 +114,7 @@ async def test_health_up_but_no_browser_falls_back_to_simulated(
 
 
 def test_frame_svg_escapes_hostile_input() -> None:
-    url = _frame_svg('<script>&"bad"', "caption with <b>markup</b> & \"quotes\"", subtle=False)
+    url = _frame_svg('<script>&"bad"', 'caption with <b>markup</b> & "quotes"', subtle=False)
     assert url.startswith("data:image/svg+xml;base64,")
     svg = base64.b64decode(url.split(",", 1)[1]).decode("utf-8")
     assert "<script>" not in svg

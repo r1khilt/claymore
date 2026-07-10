@@ -186,9 +186,7 @@ async def _run_live(
     async with async_playwright() as pw:
         browser: Any = await pw.chromium.launch(headless=True)
         try:
-            page: Any = await browser.new_page(
-                viewport={"width": _DISPLAY_W, "height": _DISPLAY_H}
-            )
+            page: Any = await browser.new_page(viewport={"width": _DISPLAY_W, "height": _DISPLAY_H})
             await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
             shot = await _screenshot(page)
             idx += 1

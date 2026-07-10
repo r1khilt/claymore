@@ -15,6 +15,7 @@ import {
 import { Background } from '@/components/Background'
 import { Sidebar } from '@/components/Sidebar'
 import { AskView, type PersistTurn } from '@/components/ask/AskView'
+import { ProjectsView } from '@/components/projects/ProjectsView'
 import { RunChatLanding } from '@/components/run/RunChatLanding'
 import { RunView } from '@/components/run/RunView'
 import { SourceRail } from '@/components/sources/SourceRail'
@@ -107,6 +108,8 @@ export default function App() {
 
   function renderOther() {
     switch (view) {
+      case 'projects':
+        return <ProjectsView />
       case 'bench':
         return <ProtocolWorkspace protocol={protocol} />
       case 'memory':

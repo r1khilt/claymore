@@ -7,7 +7,7 @@
  */
 
 /** Top-level views selectable from the left sidebar. */
-export type View = 'ask' | 'bench' | 'memory' | 'approvals' | 'connectors' | 'proactive' | 'settings'
+export type View = 'ask' | 'projects' | 'bench' | 'memory' | 'approvals' | 'connectors' | 'proactive' | 'settings'
 
 export type SourcePlatform =
   | 'slack'
@@ -125,4 +125,6 @@ export interface Person {
   name: string
   role: string
   accent: string
+  /** portrait photo URL (falls back to initials when absent). */
+  avatar?: string
 }

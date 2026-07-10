@@ -3,6 +3,7 @@ import { Paperclip, MessageSquare, Star, MoreHorizontal, ChevronRight } from 'lu
 import type { SourceFeed, SourceMessage } from '@/lib/types'
 import { PLATFORM, PlatformIcon } from '@/lib/sources'
 import { Avatar } from '@/components/ui/Avatar'
+import { photoForAuthor } from '@/lib/mockData'
 import { cn, clockTime, timeAgo } from '@/lib/utils'
 import { IMessageThread } from './IMessageThread'
 import { SlackThread } from './SlackThread'
@@ -23,7 +24,7 @@ function Attachment({ label }: { label: string }) {
 function GenericRow({ m }: { m: SourceMessage }) {
   return (
     <div className={cn('flex gap-2.5 px-1', m.extracted && 'rounded-lg bg-sage-500/[0.05] py-1')}>
-      <Avatar name={m.author} accent={m.accent} size={30} className="mt-0.5 rounded-lg" />
+      <Avatar name={m.author} accent={m.accent} size={30} photo={photoForAuthor(m.author)} className="mt-0.5 rounded-lg" />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-1.5">
           <span className="text-[13px] font-semibold text-ink">{m.author}</span>
@@ -92,7 +93,7 @@ function NotionDoc({ feed }: { feed: SourceFeed }) {
           ))}
         </div>
         <div className="ml-auto flex items-center gap-2.5 text-[#37352f]/40">
-          {m && <Avatar name={m.author} accent={m.accent} size={18} className="ring-2 ring-white" />}
+          {m && <Avatar name={m.author} accent={m.accent} size={18} photo={photoForAuthor(m.author)} className="ring-2 ring-white" />}
           <MessageSquare className="size-3.5" strokeWidth={1.75} />
           <Star className="size-3.5" strokeWidth={1.75} />
           <MoreHorizontal className="size-3.5" strokeWidth={1.75} />
@@ -114,7 +115,7 @@ function NotionDoc({ feed }: { feed: SourceFeed }) {
               label="Edited by"
             >
               <span className="flex items-center gap-1.5">
-                <Avatar name={m.author} accent={m.accent} size={16} />
+                <Avatar name={m.author} accent={m.accent} size={16} photo={photoForAuthor(m.author)} />
                 {m.author}
               </span>
             </NotionPropertyRow>
@@ -146,7 +147,7 @@ function GithubRow({ m }: { m: SourceMessage }) {
   return (
     <div className="flex items-center gap-2.5 px-1">
       <span className="grid size-6 shrink-0 place-items-center rounded-full bg-black/[0.05] text-[10px]">
-        <Avatar name={m.author} accent={m.accent} size={24} />
+        <Avatar name={m.author} accent={m.accent} size={24} photo={photoForAuthor(m.author)} />
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] text-ink/85">{m.text}</p>

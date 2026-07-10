@@ -1,6 +1,7 @@
 import { Star, CornerUpLeft, CornerUpRight, MoreVertical, ChevronDown, X } from 'lucide-react'
 import type { SourceFeed } from '@/lib/types'
 import { Avatar } from '@/components/ui/Avatar'
+import { photoForAuthor } from '@/lib/mockData'
 import { clockTime, shortDate } from '@/lib/utils'
 import { MemoryChip } from './MemoryChip'
 
@@ -41,7 +42,7 @@ export function GmailMessage({ feed }: { feed: SourceFeed }) {
 
       {/* sender identity row */}
       <div className="mt-3 flex gap-2.5">
-        <Avatar name={m.author} accent={m.accent} size={34} />
+        <Avatar name={m.author} accent={m.accent} size={34} photo={photoForAuthor(m.author)} />
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-1.5">
             <div className="min-w-0 flex-1">

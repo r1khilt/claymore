@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import {
   Sparkles,
+  FolderGit2,
   FlaskConical,
   Waypoints,
   CheckCheck,
@@ -18,6 +19,7 @@ import { Avatar } from '@/components/ui/Avatar'
 
 const NAV: { view: View; label: string; icon: LucideIcon }[] = [
   { view: 'ask', label: 'Ask', icon: Sparkles },
+  { view: 'projects', label: 'Projects', icon: FolderGit2 },
   { view: 'bench', label: 'Bench', icon: FlaskConical },
   { view: 'memory', label: 'Memory', icon: Waypoints },
   { view: 'approvals', label: 'Approvals', icon: CheckCheck },

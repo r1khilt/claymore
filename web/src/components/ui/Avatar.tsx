@@ -11,12 +11,27 @@ export function Avatar({
   accent = '#6f7268',
   size = 30,
   className,
+  photo,
 }: {
   name: string
   accent?: string
   size?: number
   className?: string
+  /** portrait photo URL — rendered instead of initials when present. */
+  photo?: string
 }) {
+  if (photo) {
+    return (
+      <img
+        src={photo}
+        alt={name}
+        width={size}
+        height={size}
+        className={cn('shrink-0 rounded-full object-cover', className)}
+        style={{ width: size, height: size, boxShadow: 'inset 0 0 0 1px rgba(28,29,24,0.08)' }}
+      />
+    )
+  }
   return (
     <span
       className={cn(

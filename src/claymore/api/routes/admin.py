@@ -51,6 +51,8 @@ class IngestRequest(BaseModel):
     lab_id: str = "lab1"
     days: int = Field(default=7, ge=1, le=365)
     """Backfill window. Small by default — extraction is an LLM call per episode (R6)."""
+    limit: int | None = Field(default=None, ge=1, le=1000)
+    """Optional hard cap on newly-stored episodes (each = one extraction call). Bounds spend."""
 
 
 class IngestJob(BaseModel):
@@ -97,6 +99,7 @@ async def _run_ingest(job_id: str, req: IngestRequest, settings: Settings) -> No
             source=req.source,
             resolver=resolver,
             since=datetime.now(UTC) - timedelta(days=req.days),
+            limit=req.limit,
         )
         _jobs[job_id] = job.model_copy(update={"status": "done", "stats": stats})
         _log.info("admin.ingest.done", job_id=job_id, source=req.source, stored=stats.stored)

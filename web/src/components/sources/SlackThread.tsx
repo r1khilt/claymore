@@ -2,6 +2,7 @@ import { Fragment } from 'react'
 import { ChevronDown, ChevronRight, SmilePlus } from 'lucide-react'
 import type { SourceMessage } from '@/lib/types'
 import { Avatar } from '@/components/ui/Avatar'
+import { photoForAuthor } from '@/lib/mockData'
 import { cn, clockTime } from '@/lib/utils'
 
 /** Consecutive messages from one author within this window collapse into a run. */
@@ -96,6 +97,7 @@ function ThreadReplies({ replies }: { replies: NonNullable<SourceMessage['replie
             name={p.name}
             accent={p.accent}
             size={20}
+            photo={photoForAuthor(p.name)}
             className="rounded-[5px] ring-2 ring-white"
           />
         ))}
@@ -159,7 +161,7 @@ export function SlackThread({
             ) : (
               <div className={cn('flex items-start gap-2 px-1', !newDay && 'mt-2.5')}>
                 <div className="relative mt-0.5 shrink-0">
-                  <Avatar name={m.author} accent={m.accent} size={30} className="rounded-[7px]" />
+                  <Avatar name={m.author} accent={m.accent} size={30} photo={photoForAuthor(m.author)} className="rounded-[7px]" />
                   <span className="absolute -bottom-[3px] -right-[3px] size-[10px] rounded-full bg-slack-active ring-2 ring-white" />
                 </div>
                 <div className="min-w-0 flex-1">

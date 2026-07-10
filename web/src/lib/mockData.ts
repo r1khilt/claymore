@@ -27,12 +27,18 @@ function daysAgo(days: number, hour = 10, min = 0): string {
 }
 
 export const people: Person[] = [
-  { id: 'lucas', name: 'Lucas Meyer', role: 'Postdoc', accent: '#3f7d5c' },
-  { id: 'philip', name: 'Philip Zhao', role: 'PhD · pipelines', accent: '#4a6fa5' },
-  { id: 'maya', name: 'Maya Okonkwo', role: 'Research scientist', accent: '#b4623f' },
-  { id: 'rikhin', name: 'Rikhin', role: 'PI', accent: '#7a5ea8' },
-  { id: 'sofia', name: 'Sofia Reyes', role: 'Collaborator · MIT', accent: '#c67f3d' },
+  { id: 'lucas', name: 'Lucas Meyer', role: 'Postdoc', accent: '#3f7d5c', avatar: '/people/lucas.jpg' },
+  { id: 'philip', name: 'Philip Zhao', role: 'PhD · pipelines', accent: '#4a6fa5', avatar: '/people/philip.jpg' },
+  { id: 'maya', name: 'Maya Okonkwo', role: 'Research scientist', accent: '#b4623f', avatar: '/people/maya.jpg' },
+  { id: 'rikhin', name: 'Rikhin', role: 'PI', accent: '#7a5ea8', avatar: '/people/rikhin.jpg' },
+  { id: 'sofia', name: 'Sofia Reyes', role: 'Collaborator · MIT', accent: '#c67f3d', avatar: '/people/sofia.jpg' },
 ]
+
+/** Portrait photo for a message author's display name (feeds show real faces, not initials). */
+export function photoForAuthor(name?: string): string | undefined {
+  if (!name) return undefined
+  return people.find((p) => p.name === name)?.avatar
+}
 
 export const exampleQueries: string[] = [
   'What did Lucas suggest last week about the X protein?',

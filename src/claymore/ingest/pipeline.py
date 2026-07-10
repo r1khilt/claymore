@@ -65,6 +65,7 @@ async def ingest_source(
     since: datetime | None = None,
     audit: AuditSink | None = None,
     incremental: bool = False,
+    limit: int | None = None,
 ) -> IngestStats:
     """Stream a source into memory. Returns counts; writes one audit record.
 
@@ -72,6 +73,9 @@ async def ingest_source(
     full backfill. ``resolver`` (if given) canonicalizes authors before storage; without it,
     episodes keep whatever author the parser set (typically ``unknown`` + a raw handle in
     ``extra`` for a later resolution pass).
+
+    ``limit`` caps the number of *newly stored* episodes (each = one extraction LLM call, R6),
+    so a bounded backfill has a bounded spend regardless of the source's page size.
     """
     from claymore.domain import UNKNOWN_AUTHOR
 
@@ -106,6 +110,9 @@ async def ingest_source(
             # One bad item never aborts a whole backfill (ENGINEERING_GUIDELINES §3).
             skipped += 1
             logger.exception("ingest.episode_failed", lab_id=lab_id, source=source)
+        if limit is not None and stored >= limit:
+            # Bounded backfill: stop once we've stored (and paid to extract) `limit` episodes.
+            break
 
     stats = IngestStats(
         lab_id=lab_id,

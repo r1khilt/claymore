@@ -45,6 +45,10 @@
   --color-imsg-gray: #e9e9eb;
   --color-imsg-label: #8e8e93;
 
+  /* Slack message pane (Slack UI kit) — link/mention blue + active-presence green */
+  --color-slack-blue: #1264a3;
+  --color-slack-active: #2eb67d;
+
   --radius-lg: 0.85rem;
   --radius-xl: 1.15rem;
   --radius-2xl: 1.6rem;

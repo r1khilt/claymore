@@ -58,13 +58,26 @@ export const feeds: SourceFeed[] = [
         timestamp: daysAgo(6, 15, 41),
         text: "Been staring at the CBX2 thermal-shift traces again — I'm now pretty sure the DMSO is the confounder, not the compound. What if we probe the allosteric pocket instead of the canonical site? Might explain the flat ΔTm.",
         extracted: true,
+        reactions: [
+          { emoji: '❤️', count: 2 },
+          { emoji: '👀', count: 1 },
+        ],
+        replies: {
+          count: 3,
+          by: [
+            { name: 'Maya Okonkwo', accent: '#b4623f' },
+            { name: 'Philip Zhao', accent: '#4a6fa5' },
+            { name: 'Sofia Reyes', accent: '#c67f3d' },
+          ],
+        },
       },
       {
         id: 'sl2',
         author: 'Maya Okonkwo',
         accent: '#b4623f',
         timestamp: daysAgo(6, 15, 48),
-        text: 'ooh. that would line up with the selectivity weirdness from March.',
+        text: '@Lucas ooh. that would line up with the selectivity weirdness from March.',
+        reactions: [{ emoji: '💡', count: 1 }],
       },
       {
         id: 'sl3',
@@ -73,6 +86,7 @@ export const feeds: SourceFeed[] = [
         timestamp: daysAgo(6, 15, 52),
         text: 'exactly — if the Y hypothesis holds, allosteric engagement should rescue the shift. Worth a docking pass before we burn more protein.',
         extracted: true,
+        reactions: [{ emoji: '🔥', count: 1 }],
       },
     ],
   },

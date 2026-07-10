@@ -74,6 +74,10 @@ export interface SourceMessage {
   bubble?: 'in' | 'out'
   /** small inline attachment chip, e.g. a linked doc / commit. */
   attachment?: { label: string; kind: SourcePlatform }
+  /** Slack: emoji reactions on this message. */
+  reactions?: { emoji: string; count: number }[]
+  /** Slack: threaded-reply summary (facepile + count) shown beneath the message. */
+  replies?: { count: number; by: { name: string; accent?: string }[] }
 }
 
 export interface SourceFeed {

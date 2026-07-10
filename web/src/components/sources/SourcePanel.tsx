@@ -4,6 +4,7 @@ import { PLATFORM, PlatformIcon } from '@/lib/sources'
 import { Avatar } from '@/components/ui/Avatar'
 import { cn, clockTime, timeAgo } from '@/lib/utils'
 import { IMessageThread } from './IMessageThread'
+import { SlackThread } from './SlackThread'
 
 function MemoryChip() {
   return (
@@ -25,7 +26,7 @@ function Attachment({ label }: { label: string }) {
 
 /* -------- per-platform message bodies -------- */
 
-function SlackRow({ m }: { m: SourceMessage }) {
+function GenericRow({ m }: { m: SourceMessage }) {
   return (
     <div className={cn('flex gap-2.5 px-1', m.extracted && 'rounded-lg bg-sage-500/[0.05] py-1')}>
       <Avatar name={m.author} accent={m.accent} size={30} className="mt-0.5 rounded-lg" />
@@ -122,11 +123,13 @@ function Body({ feed }: { feed: SourceFeed }) {
           ))}
         </div>
       )
+    case 'slack':
+      return <SlackThread messages={feed.messages} />
     default:
       return (
         <div className="flex flex-col gap-2.5">
           {feed.messages.map((m) => (
-            <SlackRow key={m.id} m={m} />
+            <GenericRow key={m.id} m={m} />
           ))}
         </div>
       )

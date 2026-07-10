@@ -15,6 +15,7 @@ import type { AgentEvent, AnalysisResult, ToolName } from '@/lib/agent'
 import type { Protocol } from '@/lib/protocol'
 import { AnswerView } from './AnswerView'
 import { ProtocolCard } from './ProtocolCard'
+import { MLResultCard } from './MLResultCard'
 
 const TOOL_ICON: Record<ToolName, LucideIcon> = {
   search_memory: Search,
@@ -22,6 +23,7 @@ const TOOL_ICON: Record<ToolName, LucideIcon> = {
   generate_protocol: FlaskConical,
   simulate: Play,
   run_analysis: Cpu,
+  run_ml_analysis: Cpu,
 }
 
 type ToolEnd = Extract<AgentEvent, { type: 'toolEnd' }>
@@ -116,7 +118,9 @@ export function AgentTurn({
   running: boolean
   onOpenProtocol: (p: Protocol) => void
 }) {
-  const hasResult = events.some((e) => e.type === 'answer' || e.type === 'protocol' || e.type === 'analysis')
+  const hasResult = events.some(
+    (e) => e.type === 'answer' || e.type === 'protocol' || e.type === 'analysis' || e.type === 'mlResult',
+  )
   // The live agent surfaces its final prose as both a `thought` and the `answer`;
   // don't render the thought twice.
   const answerTexts = new Set(
@@ -149,6 +153,12 @@ export function AgentTurn({
             return (
               <div key={i} className="mt-1">
                 <AnalysisCard result={e.analysis} />
+              </div>
+            )
+          case 'mlResult':
+            return (
+              <div key={i} className="mt-1">
+                <MLResultCard result={e.result} />
               </div>
             )
           case 'error':

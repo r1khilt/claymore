@@ -27,7 +27,10 @@ ingest = ["composio>=0.5", "composio-anthropic>=0.5"]      # ConnectorHub (Pipes
 state = ["asyncpg>=0.30", "sqlalchemy[asyncio]>=2.0", "alembic>=1.14", "redis>=5.2", "arq>=0.26"]
 messaging = ["python-telegram-bot>=21.6", "twilio>=9.3"]   # MessagingChannel (Pipes)
 mcp = ["fastmcp>=2.0"]                                      # MCP-out server (Brain, Phase 2.5)
-# execute/ (compute + wet-lab) deps are added in Phase 3/4, intentionally not here yet.
+# ML-analysis (execute/ml_analysis.py) runs stdlib-only + deterministic by default; torch is an
+# optional accelerator for the classifier (the "PyTorch model" path), used only when importable.
+execute = ["torch>=2.2"]
+# remaining execute/ (compute sandbox + wet-lab) deps are added in Phase 3/4, not here yet.
 
 dev = [
     "ruff>=0.8",
@@ -58,6 +61,9 @@ ignore = ["S101"]  # allow assert in tests
 "tests/**" = ["S", "B"]
 # scientific display strings use legit unicode (×, ·, µ, °, Δ) — not homoglyph risk
 "src/claymore/agent/agent_loop.py" = ["RUF001", "RUF002", "RUF003"]
+# synthetic-data generation + the permutation test use random for science, not security (S311)
+"src/claymore/execute/datasets.py" = ["S311"]
+"src/claymore/execute/ml_analysis.py" = ["S311"]
 
 # --- types: mypy --strict is the CI gate (ENGINEERING_GUIDELINES §1) ---
 [tool.mypy]
@@ -69,7 +75,7 @@ mypy_path = "src"
 explicit_package_bases = true
 # vendor SDKs without stubs — don't fail the strict gate on them
 [[tool.mypy.overrides]]
-module = ["graphiti_core.*", "voyageai.*", "composio.*", "composio_anthropic.*", "fastmcp.*", "arq.*", "opentrons.*"]
+module = ["graphiti_core.*", "voyageai.*", "composio.*", "composio_anthropic.*", "fastmcp.*", "arq.*", "opentrons.*", "torch.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

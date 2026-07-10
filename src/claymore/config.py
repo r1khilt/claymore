@@ -78,11 +78,23 @@ class Settings(BaseSettings):
     modal_token_secret: SecretStr = SecretStr("")
     e2b_api_key: SecretStr = SecretStr("")
     claude_science_url: str = "http://localhost:8765"
-    """Local web UI of the Claude Science app the agent drives via computer use (execute/
-    claude_science.py). Unreachable ⇒ the tool degrades to a simulated preview."""
+    """Local Claude Science daemon Claymore drives over its HTTP API (execute/claude_science.py).
+    MUST be a loopback origin (localhost/127.0.0.0-8/::1) — a non-loopback value is refused and the
+    tool degrades to a simulated preview. Unreachable ⇒ preview as well."""
     claude_science_model: str = "claude-opus-4-8"
-    """Computer-use-capable model that operates Claude Science's UI (needs the computer_20251124
-    tool + the ``computer-use-2025-11-24`` beta)."""
+    """Model Claude Science runs the submitted task with (its own agents call it server-side)."""
+    claude_science_effort: str = "high"
+    """Reasoning effort Claude Science runs the task at (``low`` | ``medium`` | ``high``)."""
+    claude_science_project_id: str = ""
+    """Target Claude Science project id; empty ⇒ Claymore picks the first non-example project."""
+    claude_science_cli: str = ""
+    """Path to the ``claude-science`` CLI used to mint a one-time login nonce; empty ⇒
+    ``~/.claude-science/bin/claude-science``."""
+    claude_science_poll_interval_s: float = 2.0
+    """How often (seconds) Claymore polls a running Claude Science frame for progress."""
+    claude_science_run_timeout_s: float = 900.0
+    """Max seconds Claymore waits for a Claude Science run before giving up (the run keeps going
+    server-side; Claymore just stops waiting and returns an honest 'still running' result)."""
 
     # --- cost / behavior knobs (R6) ---
     extraction_model: str = "claude-haiku-4-5-20251001"

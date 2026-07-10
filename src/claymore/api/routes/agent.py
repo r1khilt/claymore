@@ -1,10 +1,12 @@
 """Web UI agent endpoint — the streaming Claude tool loop behind the Composer chat.
 
-``POST /api/agent`` runs the real multi-tool agent (``agent_loop.run_agent``) and streams each
-:class:`~claymore.agent.agent_loop.AgentEvent` back as Server-Sent Events (``data: {json}\\n\\n``,
-camelCase to match the TypeScript client). Unlike ``/api/ask`` (one attributed answer), this is
-the interactive surface: thoughts, tool start/end, an answer with citations, an Opentrons protocol
-spec, a bio-analysis card.
+``POST /api/agent`` runs the restricted Claude Agent SDK runtime
+(``sdk_loop.run_sdk_agent``) and streams each :class:`~claymore.agent.agent_loop.AgentEvent` back
+as Server-Sent Events (``data: {json}\\n\\n``, camelCase to match the TypeScript client). Unlike
+``/api/ask`` (one attributed answer), this is the interactive surface: thoughts, tool start/end,
+an answer with citations, an Opentrons protocol spec, and analysis cards. If the optional Agent
+SDK cannot import or start, the endpoint falls back to the existing direct Messages loop with the
+same restricted tool allowlist; it never falls back after the SDK has emitted an event.
 
 It is **doubly gated** and fail-closed: it only runs when ``WEB_API_ENABLED`` is on *and* an
 Anthropic key is configured (the loop calls the real model — there is no keyless path here). When
@@ -29,7 +31,15 @@ from pydantic import BaseModel, SecretStr
 
 from claymore import local_store
 from claymore.agent import RequestContext, get_runtime
-from claymore.agent.agent_loop import DoneEvent, ErrorEvent, event_json, run_agent
+from claymore.agent.agent_loop import (
+    AgentEvent,
+    DoneEvent,
+    ErrorEvent,
+    ThoughtEvent,
+    event_json,
+    run_agent,
+)
+from claymore.agent.sdk_loop import SAFE_TOOL_NAMES, AgentSdkUnavailable, run_sdk_agent
 from claymore.config import Settings, get_settings
 from claymore.logging import get_logger
 
@@ -82,20 +92,59 @@ async def _event_stream(query: str, settings: Settings) -> AsyncIterator[str]:
     )
     max_iters, max_tokens = local_store.reasoning_budget()
     _log.info("web.agent.start", chars=len(query))
+
+    def record(event: AgentEvent) -> None:
+        if isinstance(event, DoneEvent):
+            local_store.record_run(
+                input_tokens=event.input_tokens,
+                output_tokens=event.output_tokens,
+                tool_calls=event.tool_calls,
+                tool_counts=event.tool_counts,
+                model=settings.query_model,
+            )
+        elif isinstance(event, ErrorEvent):
+            local_store.record_error(event.message, context="agent.loop")
+
+    sdk_emitted = False
     try:
-        async for event in run_agent(
-            ctx, query, store, settings, max_iterations=max_iters, max_tokens=max_tokens
-        ):
-            if isinstance(event, DoneEvent):
-                local_store.record_run(
-                    input_tokens=event.input_tokens,
-                    output_tokens=event.output_tokens,
-                    tool_calls=event.tool_calls,
-                    tool_counts=event.tool_counts,
-                    model=settings.query_model,
+        try:
+            async for event in run_sdk_agent(
+                ctx, query, store, settings, max_iterations=max_iters, max_tokens=max_tokens
+            ):
+                sdk_emitted = True
+                record(event)
+                yield _sse(event_json(event))
+            return
+        except AgentSdkUnavailable as exc:
+            _log.warning(
+                "web.agent.sdk_unavailable",
+                error_type=type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__,
+                partial=sdk_emitted,
+            )
+            if sdk_emitted:
+                event = ErrorEvent(
+                    message="Claude Agent SDK became unavailable before the request completed."
                 )
-            elif isinstance(event, ErrorEvent):
-                local_store.record_error(event.message, context="agent.loop")
+                record(event)
+                yield _sse(event_json(event))
+                return
+
+        # Compatibility only: this path is entered solely when the SDK cannot import/start, and
+        # receives the same restricted tool surface (no ingest, no live Claude Science).
+        notice = ThoughtEvent(
+            text="Claude Agent SDK is unavailable; using the restricted compatibility loop."
+        )
+        yield _sse(event_json(notice))
+        async for event in run_agent(
+            ctx,
+            query,
+            store,
+            settings,
+            max_iterations=max_iters,
+            max_tokens=max_tokens,
+            allowed_tool_names=SAFE_TOOL_NAMES,
+        ):
+            record(event)
             yield _sse(event_json(event))
     except Exception as exc:  # never leak internals; give the client a terminal error event
         _log.exception("web.agent.failed")

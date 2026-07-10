@@ -562,7 +562,7 @@ def _tool_specs() -> list[ToolParam]:
                 "Run an analysis in the Claude Science workbench — Anthropic's multi-agent science "
                 "app (genomics, proteomics, structural biology, cheminformatics) with 60+ "
                 "databases, BioNeMo models (Evo 2, Boltz-2, OpenFold3), and GPU compute. Claymore "
-                "operates the app for the user via computer use and streams what it does. Prefer "
+                "drives the app for the user and streams what it does. Prefer "
                 "this over run_bio_analysis when the task is heavier, spans multiple tools or "
                 "databases, needs structural biology or genomics, or the user asks for Claude "
                 "Science or 'the workbench'. Returns a result plus a recorded session."
@@ -668,6 +668,7 @@ async def run_agent(
     *,
     max_iterations: int | None = None,
     max_tokens: int | None = None,
+    allowed_tool_names: frozenset[str] | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the bounded Claude tool loop for one Composer query, yielding events as it goes.
 
@@ -677,12 +678,16 @@ async def run_agent(
 
     ``max_iterations`` / ``max_tokens`` let the caller override the loop budget from the stored
     reasoning level (see ``local_store.reasoning_budget``); both default to the module constants.
+    ``allowed_tool_names`` is used only by the restricted Agent-SDK compatibility fallback; when
+    supplied, tools outside that explicit set are not sent to the model at all.
     The terminal :class:`DoneEvent` carries this turn's real token usage and tool-call counts so
     the route can record them into the local metrics store.
     """
     user = User(id=ctx.user_id, lab_id=ctx.lab_id, person_id=ctx.user_id)
     client = _build_client(settings)
     tools = _tool_specs()
+    if allowed_tool_names is not None:
+        tools = [tool for tool in tools if tool["name"] in allowed_tool_names]
     model = settings.query_model
     iter_cap = max_iterations if max_iterations and max_iterations > 0 else _MAX_ITERATIONS
     token_cap = max_tokens if max_tokens and max_tokens > 0 else _MAX_TOKENS

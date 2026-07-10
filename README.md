@@ -13,12 +13,29 @@ ingest a lab's scattered memory → **ask** and get an *attributed* answer → *
 
 ## What works today (2026-07-09)
 
-The end-to-end ask path is **live**: Slack/Gmail/GitHub ingest through Composio into a
+The end-to-end **ask** path is **live**: Slack/Gmail/GitHub ingest through Composio into a
 Graphiti/FalkorDB temporal graph (identity-resolved, provenance-tagged, Haiku extraction),
-and a Telegram bot (@ClaymoreLabs_bot) answers questions like *"what did I commit this
-week?"* with cited, attributed facts — or an honest no-answer when the graph can't ground
-one. Write-backs, MCP-out, and proactive triggers are built and tested behind flags; the
-bio execute layer is next.
+answered with cited, attributed facts — or an honest no-answer when the graph can't ground
+one — over both a Telegram bot (@ClaymoreLabs_bot) and a **web dashboard** (`web/`): a
+Composer chat, a Bench workspace, and live source panels (Slack/Gmail/Notion/iMessage).
+Write-backs, MCP-out, and proactive triggers are built and tested behind flags.
+
+The **bio execute layer** has landed its first agent-run work, streamed live into the
+Composer (each degrades to a self-contained demo when its backend isn't configured, so the
+whole path is usable without keys and flips to real when they're present):
+
+- **Bench** — the agent authors an Opentrons scene from the full OT-2/Flex catalog (deck +
+  choreography + generated Protocol-API / PyLabRobot code), rendered in 2D/3D and dry-run
+  simulated. Nothing runs on a robot.
+- **ML analysis** (`execute/ml_analysis.py`) — trains a model on a dataset the lab *actually
+  referenced in memory* (resolved + attributed, never fabricated) and returns a grounded
+  verdict (supported / refuted / inconclusive) with inline charts.
+- **Claude Science** (`execute/claude_science.py`) — drives Anthropic's Claude Science
+  workbench at `localhost:8765` via **computer use** (screenshot → action → repeat), streaming
+  each step into a collapsible "watch Claymore work" panel; previews a simulated run when the
+  app isn't up.
+
+Compute-sandbox and wet-lab execution remain gated and later-phase.
 
 ## Quickstart
 
@@ -61,9 +78,11 @@ src/claymore/
 ├── messaging/       # [Pipes]  Telegram (live) / WhatsApp via Twilio (paid-Twilio labs)
 ├── mcp_server/      # [Brain]  expose lab memory over MCP
 ├── proactive/       # briefs, never-tested-idea nudges, digests
-├── execute/         # [Brain]  science agent, compute, wet-lab (later, gated)
+├── execute/         # [Brain]  ml_analysis + claude_science (live); compute/wet-lab (gated, later)
 ├── auth/            # per-user/per-lab scoping, RBAC
 └── audit.py         # immutable audit trail
+
+web/                 # Vite/React dashboard: Composer chat, Bench (2D/3D deck), source panels
 ```
 
 ## The frozen contracts

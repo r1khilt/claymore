@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Loader2,
@@ -84,57 +84,91 @@ function collectScienceSteps(events: AgentEvent[], id: string): ScienceStep[] {
   return events.flatMap((e) => (e.type === 'scienceStep' && e.id === id ? [e.step] : []))
 }
 
-function Thought({ text }: { text: string }) {
+/* ---------------------------------------------------------------- activity -- */
+
+type TraceItem =
+  | { kind: 'thought'; text: string }
+  | { kind: 'tool'; tool: ToolName; label: string; end?: ToolEnd }
+
+function ActivityRow({ item, live }: { item: TraceItem; live: boolean }) {
+  if (item.kind === 'thought') {
+    return (
+      <div className="flex items-start gap-2 py-1 text-[12.5px] italic leading-relaxed text-muted">
+        <Sparkles className="mt-[3px] size-3 shrink-0 text-sage-400" strokeWidth={2} />
+        <span>{item.text}</span>
+      </div>
+    )
+  }
+  const Icon = TOOL_ICON[item.tool] ?? Sparkles
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="flex items-center gap-2 text-[13.5px] text-muted"
-    >
-      <Sparkles className="size-3.5 shrink-0 text-sage-500" strokeWidth={2} />
-      <span className="italic">{text}</span>
-    </motion.div>
+    <div className="flex items-start gap-2 py-1 text-[12.5px] leading-relaxed">
+      <Icon className="mt-[3px] size-3 shrink-0 text-muted" strokeWidth={2} />
+      <span className="min-w-0 flex-1">
+        <span className="text-ink/80">{item.label}</span>
+        {item.end?.summary && <span className="text-faint"> — {item.end.summary}</span>}
+      </span>
+      {live ? (
+        <Loader2 className="mt-[3px] size-3 shrink-0 animate-spin text-sage-500" strokeWidth={2.5} />
+      ) : item.end?.ok === false ? (
+        <X className="mt-[3px] size-3 shrink-0 text-clay-500" strokeWidth={2.5} />
+      ) : item.end ? (
+        <Check className="mt-[3px] size-3 shrink-0 text-sage-600" strokeWidth={2.5} />
+      ) : null}
+    </div>
   )
 }
 
-function ToolStep({
-  tool,
-  label,
-  end,
-  running,
-}: {
-  tool: ToolName
-  label: string
-  end?: ToolEnd
-  running: boolean
-}) {
-  const Icon = TOOL_ICON[tool] ?? Sparkles
+/** The agent's thinking + tool trail, folded into a single quiet line. While the turn
+ *  runs it stays open so you can watch; once the answer lands it collapses to
+ *  "Worked · n steps" and expands on click. */
+function Activity({ items, live }: { items: TraceItem[]; live: boolean }) {
+  const [open, setOpen] = useState(false)
+  const expanded = live || open
+  const steps = items.filter((i) => i.kind === 'tool').length
+  if (items.length === 0) return null
+
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="flex items-start gap-2.5 rounded-xl border border-black/[0.05] bg-white/45 px-3 py-2"
-    >
-      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md bg-black/[0.05] text-muted">
-        <Icon className="size-3.5" strokeWidth={2} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[13px] text-ink">{label}</span>
-          {running ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-sage-500" strokeWidth={2.25} />
-          ) : end?.ok ? (
-            <Check className="size-3.5 shrink-0 text-sage-600" strokeWidth={2.5} />
-          ) : (
-            <X className="size-3.5 shrink-0 text-clay-500" strokeWidth={2.5} />
-          )}
-        </div>
-        {end && <div className="mt-0.5 text-[12px] text-faint">{end.summary}</div>}
-      </div>
-    </motion.div>
+    <div className="flex flex-col">
+      <button
+        onClick={() => !live && setOpen((v) => !v)}
+        className={cn(
+          'flex w-fit items-center gap-1.5 rounded-md py-0.5 text-[12px] font-medium transition-colors',
+          live ? 'cursor-default text-sage-700' : 'text-faint hover:text-muted',
+        )}
+      >
+        {live ? (
+          <Loader2 className="size-3 animate-spin text-sage-500" strokeWidth={2.5} />
+        ) : (
+          <Sparkles className="size-3 text-sage-400" strokeWidth={2} />
+        )}
+        {live ? 'Working…' : `Worked · ${steps || items.length} step${(steps || items.length) === 1 ? '' : 's'}`}
+        {!live && (
+          <ChevronDown className={cn('size-3.5 transition-transform', open && 'rotate-180')} strokeWidth={2} />
+        )}
+      </button>
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            key="trace"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="ml-[5px] mt-1.5 flex flex-col border-l border-sage-500/20 pl-3.5">
+              {items.map((item, i) => (
+                <ActivityRow key={i} item={item} live={live && item.kind === 'tool' && !item.end} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
+
+/* ------------------------------------------------------------------- cards -- */
 
 function AnalysisCard({ result }: { result: AnalysisResult }) {
   return (
@@ -345,6 +379,8 @@ function ScienceSessionCard({
   )
 }
 
+/* -------------------------------------------------------------------- turn -- */
+
 export function AgentTurn({
   events,
   running,
@@ -367,67 +403,62 @@ export function AgentTurn({
   const answerTexts = new Set(
     events.flatMap((e) => (e.type === 'answer' ? [e.text.trim()] : [])),
   )
-  return (
-    <div className="flex flex-col gap-2.5">
-      {events.map((e, i) => {
-        switch (e.type) {
-          case 'thought':
-            if (answerTexts.has(e.text.trim())) return null
-            return <Thought key={i} text={e.text} />
-          case 'toolStart': {
-            const end = findEnd(events, e.id)
-            if (e.tool === 'run_claude_science') {
-              return (
-                <div key={i} className="mt-1">
-                  <ScienceSessionCard
-                    session={findScienceSession(events, e.id)}
-                    liveSteps={collectScienceSteps(events, e.id)}
-                    running={!end && running}
-                  />
-                </div>
-              )
-            }
-            return <ToolStep key={i} tool={e.tool} label={e.label} end={end} running={!end && running} />
-          }
-          case 'scienceStep':
-          case 'scienceSession':
-            // Rendered inside the ScienceSessionCard (anchored on the toolStart), not standalone.
-            return null
-          case 'answer':
-            return (
-              <div key={i} className="mt-1">
-                <AnswerView reply={{ text: e.text, citations: e.citations }} />
-              </div>
-            )
-          case 'protocol':
-            return (
-              <div key={i} className="mt-1">
-                <ProtocolCard protocol={e.protocol} onOpen={() => onOpenProtocol(e.protocol)} />
-              </div>
-            )
-          case 'analysis':
-            return (
-              <div key={i} className="mt-1">
-                <AnalysisCard result={e.analysis} />
-              </div>
-            )
-          case 'mlResult':
-            return (
-              <div key={i} className="mt-1">
-                <MLResultCard result={e.result} />
-              </div>
-            )
-          case 'error':
-            return (
-              <div key={i} className="glass rounded-xl px-3.5 py-2.5 text-[13px] text-clay-500">
-                {e.message}
-              </div>
-            )
-          default:
-            return null
+
+  // Split the stream: thoughts + ordinary tool calls fold into the Activity line;
+  // answers and rich cards render full-size below it.
+  const trace: TraceItem[] = []
+  const blocks: ReactNode[] = []
+  events.forEach((e, i) => {
+    switch (e.type) {
+      case 'thought':
+        if (!answerTexts.has(e.text.trim())) trace.push({ kind: 'thought', text: e.text })
+        break
+      case 'toolStart': {
+        const end = findEnd(events, e.id)
+        if (e.tool === 'run_claude_science') {
+          blocks.push(
+            <ScienceSessionCard
+              key={i}
+              session={findScienceSession(events, e.id)}
+              liveSteps={collectScienceSteps(events, e.id)}
+              running={!end && running}
+            />,
+          )
+        } else {
+          trace.push({ kind: 'tool', tool: e.tool, label: e.label, end })
         }
-      })}
-      {running && !hasResult && (
+        break
+      }
+      case 'answer':
+        blocks.push(<AnswerView key={i} reply={{ text: e.text, citations: e.citations }} />)
+        break
+      case 'protocol':
+        blocks.push(<ProtocolCard key={i} protocol={e.protocol} onOpen={() => onOpenProtocol(e.protocol)} />)
+        break
+      case 'analysis':
+        blocks.push(<AnalysisCard key={i} result={e.analysis} />)
+        break
+      case 'mlResult':
+        blocks.push(<MLResultCard key={i} result={e.result} />)
+        break
+      case 'error':
+        blocks.push(
+          <div key={i} className="glass rounded-xl px-3.5 py-2.5 text-[13px] text-clay-500">
+            {e.message}
+          </div>,
+        )
+        break
+      default:
+        // scienceStep / scienceSession render inside the ScienceSessionCard; 'done' is a no-op.
+        break
+    }
+  })
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Activity items={trace} live={running && !hasResult} />
+      {blocks}
+      {running && !hasResult && trace.length === 0 && (
         <div className="flex items-center gap-1.5 pl-0.5 text-[13px] text-faint">
           <span className="size-1.5 animate-pulse rounded-full bg-sage-400" />
           working

@@ -51,14 +51,18 @@ function LabwarePlacement({
   sink: boolean
 }) {
   const ref = useRef<THREE.Group>(null)
-  useFrame(() => {
+  useFrame((_, dt) => {
     const g = ref.current
     if (!g) return
-    g.position.lerp(target, 0.16)
+    // Frame-rate-independent smoothing (exponential) so a gripper move / instrument hand-off eases
+    // at the same speed at 30fps or 144fps — a fixed per-frame lerp jitters with the frame rate.
+    const kPos = 1 - Math.exp(-dt * 10)
+    g.position.lerp(target, kPos)
     const sc = sink ? 0.001 : 1
-    g.scale.x += (sc - g.scale.x) * 0.2
-    g.scale.y += (sc - g.scale.y) * 0.2
-    g.scale.z += (sc - g.scale.z) * 0.2
+    const kScale = 1 - Math.exp(-dt * 12)
+    g.scale.x += (sc - g.scale.x) * kScale
+    g.scale.y += (sc - g.scale.y) * kScale
+    g.scale.z += (sc - g.scale.z) * kScale
   })
   return (
     <group ref={ref} position={[target.x, target.y, target.z]}>
@@ -146,7 +150,7 @@ function Gantry({ protocol, geom, state }: { protocol: Protocol; geom: DeckGeom;
   target.current = { x: worldX(geom.width, state.pos.x), z: worldZ(geom.height, state.pos.y), dip: state.dipping }
 
   useFrame((_, dt) => {
-    const k = Math.min(1, dt * 6)
+    const k = 1 - Math.exp(-dt * 10) // frame-rate-independent easing, matches the labware smoothing
     const t = target.current
     if (bridge.current) bridge.current.position.z += (t.z - bridge.current.position.z) * k
     if (carriage.current) {

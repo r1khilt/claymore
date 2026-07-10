@@ -57,6 +57,14 @@ function PlateWells({ labId, def, bodyH, fills, magnet, metal }: { labId: string
   const skirtH = bodyH * 0.42
   const wellH = bodyH - skirtH
   const conical = !!def.conical
+  // Detail scales down with well count: a 384-well plate at this size is ~1900 meshes at full
+  // detail, which z-fights (overlapping translucent walls) and tanks the frame rate. Denser plates
+  // get fewer radial segments and drop the rim (invisible at that scale) / recessed floor.
+  const nWells = def.rows * def.cols
+  const dense = nWells >= 96
+  const veryDense = nWells >= 384
+  const seg = veryDense ? 6 : dense ? 8 : 12
+  const square = def.wellShape === 'square'
   const wells = []
   for (let row = 0; row < def.rows; row++) {
     for (let col = 0; col < def.cols; col++) {
@@ -67,34 +75,47 @@ function PlateWells({ labId, def, bodyH, fills, magnet, metal }: { labId: string
       const rTop = w.r * 0.98
       const rBot = conical ? w.r * 0.5 : w.r * 0.9
       const liqH = frac > 0 ? Math.max(0.012, frac * wellH * 0.86) : 0
+      const side = w.r * 1.7 // square-well footprint
       wells.push(
         <group key={key} position={[w.x, 0, w.z]}>
-          {/* translucent well wall */}
+          {/* translucent well wall — square wells (e.g. 384) render as boxes, round as cones */}
           <mesh position={[0, skirtH + wellH / 2, 0]}>
-            <cylinderGeometry args={[rTop, rBot, wellH, 14, 1, true]} />
+            {square ? (
+              <boxGeometry args={[side, wellH, side]} />
+            ) : (
+              <cylinderGeometry args={[rTop, rBot, wellH, seg, 1, true]} />
+            )}
             <ClearWall />
           </mesh>
-          {/* dark recessed floor */}
-          <mesh position={[0, skirtH + 0.006, 0]}>
-            <cylinderGeometry args={[rBot * 1.02, rBot * 0.7, 0.012, 14]} />
-            <meshStandardMaterial color={WELL_FLOOR} roughness={0.85} />
-          </mesh>
-          {/* rim */}
-          <mesh position={[0, skirtH + wellH - 0.004, 0]}>
-            <torusGeometry args={[rTop * 0.98, rTop * 0.08, 6, 16]} />
-            <BodyPlastic color={def.tint ?? '#f2f1ec'} metal={metal} />
-          </mesh>
+          {/* dark recessed floor (skipped on the densest plates) */}
+          {!veryDense && (
+            <mesh position={[0, skirtH + 0.006, 0]}>
+              <cylinderGeometry args={[rBot * 1.02, rBot * 0.7, 0.012, seg]} />
+              <meshStandardMaterial color={WELL_FLOOR} roughness={0.85} />
+            </mesh>
+          )}
+          {/* rim — only on sparse plates where it actually reads */}
+          {!dense && (
+            <mesh position={[0, skirtH + wellH - 0.004, 0]}>
+              <torusGeometry args={[rTop * 0.98, rTop * 0.08, 6, 16]} />
+              <BodyPlastic color={def.tint ?? '#f2f1ec'} metal={metal} />
+            </mesh>
+          )}
           {/* liquid */}
           {frac > 0 && fill && (
             <mesh position={[0, skirtH + 0.008 + liqH / 2, 0]}>
-              <cylinderGeometry args={[rTop * 0.86, rBot * 0.92, liqH, 14]} />
+              {square ? (
+                <boxGeometry args={[side * 0.86, liqH, side * 0.86]} />
+              ) : (
+                <cylinderGeometry args={[rTop * 0.86, rBot * 0.92, liqH, seg]} />
+              )}
               <Liquid color={fill.color} />
             </mesh>
           )}
           {/* bead pellet against the wall when a magnet is engaged */}
           {magnet && frac > 0 && (
             <mesh position={[w.r * 0.55, skirtH + 0.02, 0]}>
-              <sphereGeometry args={[w.r * 0.32, 10, 10]} />
+              <sphereGeometry args={[w.r * 0.32, 8, 8]} />
               <meshStandardMaterial color="#5a4a2e" roughness={0.6} />
             </mesh>
           )}

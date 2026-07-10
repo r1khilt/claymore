@@ -4,9 +4,10 @@
  * stream the real /api/agent SSE endpoint emits (see api/routes/agent.py), so
  * swapping to live is just changing the source of these events.
  *
- * It routes a request to a flow (memory answer / ingest / bio-analysis / an
- * Opentrons scene), emitting thoughts + tool calls along the way. Robot scenes
- * are built by generateScene(), which refuses anything Opentrons can't do.
+ * It routes a request to a flow (memory answer / ingest / bio-analysis / a robot
+ * scene), emitting thoughts + tool calls along the way. Robot scenes are built by
+ * generateScene(); anything off the Opentrons deck falls back to a general lab-robot
+ * scene + a PyLabRobot script rather than a refusal.
  */
 import type { Citation } from './types'
 import type { Protocol } from './protocol'

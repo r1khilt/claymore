@@ -36,7 +36,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-function analysisFor(query: string): AnalysisResult {
+export function analysisFor(query: string): AnalysisResult {
   const q = query.toLowerCase()
   if (/fold|structure|alphafold|openfold|pldd/.test(q)) {
     return {

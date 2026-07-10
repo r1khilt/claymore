@@ -39,6 +39,7 @@ function BrandMark({ size = 26 }: { size?: number }) {
 export function Sidebar({
   view,
   onNavigate,
+  onHome,
   badges,
   profile,
   chats,
@@ -48,6 +49,8 @@ export function Sidebar({
 }: {
   view: View
   onNavigate: (v: View) => void
+  /** Back to the Run · Chat start screen. */
+  onHome: () => void
   badges?: Partial<Record<View, number>>
   profile: Profile
   chats: ChatSummary[]
@@ -57,10 +60,12 @@ export function Sidebar({
 }) {
   return (
     <aside className="flex h-full w-[220px] shrink-0 flex-col px-3 py-4">
-      {/* brand */}
+      {/* brand — click to return to the Run · Chat start screen */}
       <div className="flex items-center gap-2.5 px-2.5 pb-5">
-        <BrandMark />
-        <span className="font-serif text-[22px] leading-none tracking-tight text-ink">claymore</span>
+        <button onClick={onHome} className="flex items-center gap-2.5 rounded-lg" title="Home">
+          <BrandMark />
+          <span className="font-serif text-[22px] leading-none tracking-tight text-ink">claymore</span>
+        </button>
         <button
           className="ml-auto grid size-7 place-items-center rounded-lg text-faint transition-colors hover:bg-black/5 hover:text-muted"
           title="Collapse"

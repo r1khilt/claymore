@@ -56,6 +56,7 @@ from claymore.agent.hardware import (
 from claymore.agent.tools import facts_to_citations, search_memory
 from claymore.auth.models import User
 from claymore.config import Settings
+from claymore.execute.claude_science import ScienceSession, ScienceStep, run_science_session
 from claymore.logging import get_logger
 from claymore.memory.ontology import Fact
 from claymore.ports import MemoryStore
@@ -88,7 +89,8 @@ _SYSTEM_PROMPT = (
     "You are Claymore, a lab-memory and lab-automation assistant, running the Composer for a "
     "research lab. You have tools to (1) search the lab's attributed memory, (2) trigger an "
     "ingest of a connected source, (3) design a robot experiment as a runnable scene, (4) run a "
-    "computational bio analysis, and (5) simulate a protocol.\n\n"
+    "computational bio analysis, (5) simulate a protocol, and (6) run an analysis in the Claude "
+    "Science workbench — Anthropic's multi-agent science app — by operating it for the user.\n\n"
     "THE DECK — design experiments from this full Opentrons catalog (OT-2 and Flex):\n"
     f"{catalog_summary()}\n"
     "You can place labware on numbered OT-2 slots (1-11, trash 12) or Flex slots (A1-D4, column "
@@ -113,7 +115,10 @@ _SYSTEM_PROMPT = (
     "PyLabRobot movement script. Say clearly which part is off-deck; never pretend Opentrons did "
     "it, and never claim anything actually ran.\n\n"
     "When you have enough to answer, give a concise, grounded answer. Use a tool only when it "
-    "moves the task forward."
+    "moves the task forward. For a quick single computation use run_bio_analysis; for heavier or "
+    "multi-tool science (structural biology, genomics, cheminformatics) or when the user asks for "
+    "Claude Science or the workbench, use run_claude_science — Claymore drives the app and streams "
+    "what it does. A simulated preview is not a real result; if a run comes back simulated, say so."
 )
 
 
@@ -310,6 +315,49 @@ class AnalysisEvent(_CamelModel):
     analysis: Analysis
 
 
+class ScienceStepOut(_CamelModel):
+    """One observed step of a Claude Science run (mirrors ``execute.claude_science.ScienceStep``).
+
+    ``screenshot`` is a self-contained ``data:`` URL (PNG live / SVG preview) the client renders."""
+
+    index: int
+    action: str
+    detail: str
+    screenshot: str | None = None
+
+
+class ScienceSessionOut(_CamelModel):
+    """A recorded Claude Science run surfaced to the web client: the result card + the replayable
+    steps that power the collapsible "watch Claymore work" panel. ``status`` distinguishes a real
+    drive (``completed``) from a simulated preview so the UI never implies a fake run is real."""
+
+    task: str
+    status: str
+    url: str
+    model: str | None = None
+    steps: list[ScienceStepOut]
+    result_title: str
+    result_summary: str
+    metrics: list[Metric]
+    note: str | None = None
+
+
+class ScienceStepEvent(_CamelModel):
+    """Streamed live as Claude Science takes each action — the client appends it to the panel."""
+
+    type: Literal["scienceStep"] = "scienceStep"
+    id: str
+    step: ScienceStepOut
+
+
+class ScienceSessionEvent(_CamelModel):
+    """The finished recorded session (result + all steps), emitted once the run completes."""
+
+    type: Literal["scienceSession"] = "scienceSession"
+    id: str
+    session: ScienceSessionOut
+
+
 class DoneEvent(_CamelModel):
     type: Literal["done"] = "done"
     # Real usage for this turn — token counts from the model's ``usage`` and how many tool calls
@@ -334,6 +382,8 @@ AgentEvent = (
     | AnswerEvent
     | ProtocolEvent
     | AnalysisEvent
+    | ScienceStepEvent
+    | ScienceSessionEvent
     | DoneEvent
     | ErrorEvent
 )
@@ -461,6 +511,29 @@ def _tool_specs() -> list[ToolParam]:
             ),
         },
         {
+            "name": "run_claude_science",
+            "description": (
+                "Run an analysis in the Claude Science workbench — Anthropic's multi-agent science "
+                "app (genomics, proteomics, structural biology, cheminformatics) with 60+ "
+                "databases, BioNeMo models (Evo 2, Boltz-2, OpenFold3), and GPU compute. Claymore "
+                "operates the app for the user via computer use and streams what it does. Prefer "
+                "this over run_bio_analysis when the task is heavier, spans multiple tools or "
+                "databases, needs structural biology or genomics, or the user asks for Claude "
+                "Science or 'the workbench'. Returns a result plus a recorded session."
+            ),
+            "input_schema": _strict(
+                {
+                    "task": {
+                        "type": "string",
+                        "description": "The analysis to run, in plain language.",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                    }
+                },
+                required=["task"],
+            ),
+        },
+        {
             "name": "simulate_protocol",
             "description": (
                 "Dry-run the most recently designed Opentrons protocol and return a run summary "
@@ -479,6 +552,7 @@ _TOOL_LABELS: dict[str, str] = {
     "ingest_source": "Ingesting a source",
     "generate_opentrons_protocol": "Designing an Opentrons protocol",
     "run_bio_analysis": "Running a bio analysis",
+    "run_claude_science": "Using Claude Science",
     "simulate_protocol": "Simulating the protocol",
 }
 
@@ -575,6 +649,32 @@ async def run_agent(
                 tool=use.name,
                 label=_TOOL_LABELS.get(use.name, use.name),
             )
+            # Claude Science drives a browser step-by-step; stream each step live (screenshots +
+            # actions) so the chat panel animates as it works, then close with the full session.
+            if use.name == "run_claude_science":
+                session: ScienceSession | None = None
+                async for item in run_science_session(
+                    _str(_tool_input(use.input), "task"), settings
+                ):
+                    if isinstance(item, ScienceSession):
+                        session = item
+                    else:
+                        yield ScienceStepEvent(id=tool_id, step=_science_step_out(item))
+                sci = _science_outcome(session, tool_id)
+                for event in sci.events:
+                    if isinstance(event, AnswerEvent):
+                        answered = True
+                    yield event
+                yield ToolEndEvent(id=tool_id, ok=sci.ok, summary=sci.summary)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": use.id,
+                        "content": sci.observation,
+                        "is_error": not sci.ok,
+                    }
+                )
+                continue
             outcome, new_facts, produced = await _run_tool(
                 use.name, _tool_input(use.input), user, store, settings, last_protocol
             )
@@ -796,6 +896,53 @@ def _tool_run_analysis(kind: str, target: str) -> _ToolOutcome:
             f"Metrics: {metric_str}."
         ),
         events=[AnalysisEvent(analysis=analysis)],
+    )
+
+
+def _science_step_out(step: ScienceStep) -> ScienceStepOut:
+    """Map a driver step to the camelCase event payload the web client renders."""
+    return ScienceStepOut(
+        index=step.index, action=step.action, detail=step.detail, screenshot=step.screenshot
+    )
+
+
+def _science_outcome(session: ScienceSession | None, tool_id: str) -> _ToolOutcome:
+    """Turn a finished Claude Science session into the tool outcome: the observation fed back to the
+    model (honest about whether it was a real drive or a preview) plus the ``scienceSession`` event
+    that renders the collapsible panel. No session at all is a recoverable tool error."""
+    if session is None:
+        return _ToolOutcome(
+            ok=False,
+            summary="Claude Science produced no result.",
+            observation="The Claude Science run produced no session.",
+        )
+    out = ScienceSessionOut(
+        task=session.task,
+        status=session.status,
+        url=session.url,
+        model=session.model,
+        steps=[_science_step_out(s) for s in session.steps],
+        result_title=session.result_title,
+        result_summary=session.result_summary,
+        metrics=[Metric(label=m.label, value=m.value) for m in session.metrics],
+        note=session.note,
+    )
+    live = session.status == "completed"
+    metric_str = ", ".join(f"{m.label}={m.value}" for m in session.metrics)
+    observation = (
+        f"Claude Science {'ran' if live else 'previewed'} '{session.task}'. "
+        f"{session.result_summary} Metrics: {metric_str}."
+    )
+    if not live:
+        observation += (
+            " NOTE: this was a simulated preview (the Claude Science app was not reachable), not a "
+            "real result — tell the user the app must be running for Claymore to drive it for real."
+        )
+    return _ToolOutcome(
+        ok=True,
+        summary=session.result_title,
+        observation=observation,
+        events=[ScienceSessionEvent(id=tool_id, session=out)],
     )
 
 

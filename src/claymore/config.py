@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     modal_token_id: SecretStr = SecretStr("")
     modal_token_secret: SecretStr = SecretStr("")
     e2b_api_key: SecretStr = SecretStr("")
+    claude_science_url: str = "http://localhost:8765"
+    """Local web UI of the Claude Science app the agent drives via computer use (execute/
+    claude_science.py). Unreachable ⇒ the tool degrades to a simulated preview."""
+    claude_science_model: str = "claude-opus-4-8"
+    """Computer-use-capable model that operates Claude Science's UI (needs the computer_20251124
+    tool + the ``computer-use-2025-11-24`` beta)."""
 
     # --- cost / behavior knobs (R6) ---
     extraction_model: str = "claude-haiku-4-5-20251001"

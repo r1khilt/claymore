@@ -27,7 +27,8 @@ ingest = ["composio>=0.5", "composio-anthropic>=0.5"]      # ConnectorHub (Pipes
 state = ["asyncpg>=0.30", "sqlalchemy[asyncio]>=2.0", "alembic>=1.14", "redis>=5.2", "arq>=0.26"]
 messaging = ["python-telegram-bot>=21.6", "twilio>=9.3"]   # MessagingChannel (Pipes)
 mcp = ["fastmcp>=2.0"]                                      # MCP-out server (Brain, Phase 2.5)
-# execute/ (compute + wet-lab) deps are added in Phase 3/4, intentionally not here yet.
+browser = ["playwright>=1.48"]                              # drive Claude Science via computer use (execute/)
+# other execute/ (compute + wet-lab) deps are added in Phase 3/4, intentionally not here yet.
 
 dev = [
     "ruff>=0.8",
@@ -58,6 +59,7 @@ ignore = ["S101"]  # allow assert in tests
 "tests/**" = ["S", "B"]
 # scientific display strings use legit unicode (×, ·, µ, °, Δ) — not homoglyph risk
 "src/claymore/agent/agent_loop.py" = ["RUF001", "RUF002", "RUF003"]
+"src/claymore/execute/claude_science.py" = ["RUF001", "RUF002", "RUF003"]
 
 # --- types: mypy --strict is the CI gate (ENGINEERING_GUIDELINES §1) ---
 [tool.mypy]
@@ -69,7 +71,7 @@ mypy_path = "src"
 explicit_package_bases = true
 # vendor SDKs without stubs — don't fail the strict gate on them
 [[tool.mypy.overrides]]
-module = ["graphiti_core.*", "voyageai.*", "composio.*", "composio_anthropic.*", "fastmcp.*", "arq.*", "opentrons.*"]
+module = ["graphiti_core.*", "voyageai.*", "composio.*", "composio_anthropic.*", "fastmcp.*", "arq.*", "opentrons.*", "playwright.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

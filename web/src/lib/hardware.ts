@@ -176,6 +176,59 @@ export const ACCESSORIES: Record<string, AccessoryDef> = {
   trash_bin: { kind: 'trash_bin', display: 'Trash Bin', robots: ['Flex'] },
 }
 
+/* ------------------------------------------------------- off-deck instruments -- */
+/**
+ * Instruments the agent composes when a request needs a capability no liquid-handler deck can do
+ * (a centrifuge, a plate imager). These are NOT Opentrons labware/modules — they live off-deck on
+ * the benchtop, and the 3D engine draws a bespoke, animated model per `kind`. The agent preps a
+ * plate on the deck, then a robot arm hands it to the instrument (see `generateScene`). This is the
+ * faithful realisation of "when it's off the deck, model the instrument and animate the run."
+ */
+export type InstrumentKind =
+  | 'centrifuge'
+  | 'microscope'
+  | 'balance'
+  | 'incubator'
+  | 'sequencer'
+  | 'electroporator'
+  | 'sonicator'
+  | 'cytometer'
+  | 'colony_picker'
+  | 'generic'
+
+export interface InstrumentDef {
+  kind: InstrumentKind
+  display: string
+  /** Human phrase for what it does, e.g. "centrifugation". */
+  capability: string
+  short: string
+  /** Accent used for the status glow / display / 2D badge. */
+  tint: string
+  /** Verb the run step reads as ("spin", "image", "weigh"…). */
+  verb: string
+  /** Whether the run reads as a rotational spin (drives the 3D rotor animation). */
+  spins?: boolean
+  /** Whether it has an opening lid the plate is loaded under. */
+  lid?: boolean
+}
+
+export const INSTRUMENTS: Record<InstrumentKind, InstrumentDef> = {
+  centrifuge: { kind: 'centrifuge', display: 'Benchtop centrifuge', capability: 'centrifugation', short: 'SPIN', tint: '#3f6f9c', verb: 'spin', spins: true, lid: true },
+  microscope: { kind: 'microscope', display: 'Automated microscope', capability: 'imaging / microscopy', short: 'IMG', tint: '#5b7d8a', verb: 'image', lid: false },
+  balance: { kind: 'balance', display: 'Analytical balance', capability: 'weighing', short: 'MASS', tint: '#6f7268', verb: 'weigh', lid: true },
+  incubator: { kind: 'incubator', display: 'CO₂ incubator', capability: 'CO₂ cell culture', short: 'INC', tint: '#5f8257', verb: 'incubate', lid: true },
+  sequencer: { kind: 'sequencer', display: 'Sequencer', capability: 'sequencing', short: 'SEQ', tint: '#5a5ea8', verb: 'sequence', lid: true },
+  electroporator: { kind: 'electroporator', display: 'Electroporator', capability: 'electroporation', short: 'EP', tint: '#b4623f', verb: 'pulse', lid: true },
+  sonicator: { kind: 'sonicator', display: 'Sonicator', capability: 'sonication', short: 'SON', tint: '#7a5ea8', verb: 'sonicate', lid: false },
+  cytometer: { kind: 'cytometer', display: 'Flow cytometer', capability: 'flow cytometry', short: 'FACS', tint: '#2f7d7a', verb: 'analyze', lid: false },
+  colony_picker: { kind: 'colony_picker', display: 'Colony picker', capability: 'colony picking', short: 'PICK', tint: '#c67f3d', verb: 'pick', lid: false },
+  generic: { kind: 'generic', display: 'Benchtop instrument', capability: 'off-deck processing', short: 'INST', tint: '#6f7268', verb: 'process', lid: true },
+}
+
+export function instrumentDef(kind: InstrumentKind): InstrumentDef {
+  return INSTRUMENTS[kind] ?? INSTRUMENTS.generic
+}
+
 /* ---------------------------------------------------------------- liquid hues -- */
 
 /** A warm, legible palette for named reagents (assigned round-robin by the generators). */
@@ -201,24 +254,26 @@ export interface CapabilityGap {
   capability: string
   /** The instrument that would do it off-deck, e.g. "benchtop centrifuge". */
   instrument: string
+  /** Which bespoke instrument model the scene generator + 3D engine should build. */
+  kind: InstrumentKind
 }
 
-const CAPABILITY_GAPS: { re: RegExp; capability: string; instrument: string }[] = [
-  { re: /centrifuge|spin ?down|spin the|pellet the/, capability: 'centrifugation', instrument: 'benchtop centrifuge' },
-  { re: /microscop|image the|imaging|photograph|confocal/, capability: 'imaging / microscopy', instrument: 'automated microscope' },
-  { re: /weigh|balance|gravimetric|mass of/, capability: 'weighing', instrument: 'analytical balance' },
-  { re: /co2 incubat|cell cultur|tissue cultur|passage cells/, capability: 'CO₂ cell culture', instrument: 'CO₂ incubator + cell shuttle' },
-  { re: /sequenc|nanopore|illumina|minion/, capability: 'sequencing', instrument: 'sequencer (Illumina / ONT)' },
-  { re: /electroporat/, capability: 'electroporation', instrument: 'electroporator' },
-  { re: /sonicat/, capability: 'sonication', instrument: 'sonicator' },
-  { re: /flow cytometr|facs/, capability: 'flow cytometry', instrument: 'flow cytometer' },
-  { re: /colony pick|colony-pick/, capability: 'colony picking', instrument: 'colony picker' },
+const CAPABILITY_GAPS: { re: RegExp; capability: string; instrument: string; kind: InstrumentKind }[] = [
+  { re: /centrifuge|centrifug|spin ?down|spin the|spin it|pellet the/, capability: 'centrifugation', instrument: 'benchtop centrifuge', kind: 'centrifuge' },
+  { re: /microscop|image the|imaging|photograph|confocal/, capability: 'imaging / microscopy', instrument: 'automated microscope', kind: 'microscope' },
+  { re: /weigh|balance|gravimetric|mass of/, capability: 'weighing', instrument: 'analytical balance', kind: 'balance' },
+  { re: /co2 incubat|cell cultur|tissue cultur|passage cells/, capability: 'CO₂ cell culture', instrument: 'CO₂ incubator + cell shuttle', kind: 'incubator' },
+  { re: /sequenc|nanopore|illumina|minion/, capability: 'sequencing', instrument: 'sequencer (Illumina / ONT)', kind: 'sequencer' },
+  { re: /electroporat/, capability: 'electroporation', instrument: 'electroporator', kind: 'electroporator' },
+  { re: /sonicat/, capability: 'sonication', instrument: 'sonicator', kind: 'sonicator' },
+  { re: /flow cytometr|facs/, capability: 'flow cytometry', instrument: 'flow cytometer', kind: 'cytometer' },
+  { re: /colony pick|colony-pick/, capability: 'colony picking', instrument: 'colony picker', kind: 'colony_picker' },
 ]
 
 /** Name the capability a liquid handler lacks for this request, else null. */
 export function capabilityGap(request: string): CapabilityGap | null {
   const q = request.toLowerCase()
-  for (const g of CAPABILITY_GAPS) if (g.re.test(q)) return { capability: g.capability, instrument: g.instrument }
+  for (const g of CAPABILITY_GAPS) if (g.re.test(q)) return { capability: g.capability, instrument: g.instrument, kind: g.kind }
   return null
 }
 

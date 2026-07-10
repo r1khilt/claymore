@@ -13,10 +13,14 @@
  */
 import {
   capabilityGap,
+  instrumentDef,
   labwareDef,
   moduleDef,
   paletteColor,
   pipetteModel,
+  type CapabilityGap,
+  type InstrumentDef,
+  type InstrumentKind,
   type Robot,
 } from './hardware'
 import {
@@ -30,7 +34,7 @@ import {
   type Point,
 } from './deck'
 
-export type { Robot } from './hardware'
+export type { Robot, InstrumentKind } from './hardware'
 export type { Point, Rect, WellGeo } from './deck'
 
 /* -------------------------------------------------------------------- types --- */
@@ -79,12 +83,25 @@ export interface Accessory {
   slot?: string
 }
 
+/** An off-deck instrument (centrifuge, imager…) the agent hands a plate to. Rendered as a bespoke
+ *  animated 3D model, positioned on the benchtop beside the deck (see `deck.instrumentRect`). */
+export interface Instrument {
+  id: string
+  kind: InstrumentKind
+  display: string
+  label?: string
+  /** Which edge of the deck it stands next to. */
+  side: 'right' | 'left' | 'back'
+}
+
 export interface DeckLayout {
   robot: Robot
   labware: Labware[]
   modules: DeckModule[]
   pipettes: PipetteSpec[]
   accessories: Accessory[]
+  /** Off-deck instruments on the benchtop (empty for a pure Opentrons scene). */
+  instruments?: Instrument[]
 }
 
 export type StepKind =
@@ -106,6 +123,9 @@ export type StepKind =
   | 'open_lid'
   | 'close_lid'
   | 'read_absorbance'
+  | 'load_instrument'
+  | 'run_instrument'
+  | 'unload_instrument'
   | 'delay'
   | 'comment'
 
@@ -117,6 +137,8 @@ export interface Step {
   volume?: number
   liquid?: string
   moduleId?: string
+  /** Target off-deck instrument for load/run/unload steps. */
+  instrumentId?: string
   toSlot?: string
   temperature?: number
   rpm?: number
@@ -155,6 +177,27 @@ export function labwareById(p: Protocol, id?: string): Labware | undefined {
   return id ? p.deck.labware.find((l) => l.id === id) : undefined
 }
 
+export function instrumentById(p: Protocol, id?: string): Instrument | undefined {
+  return id ? p.deck.instruments?.find((i) => i.id === id) : undefined
+}
+
+/** The tweakable parameters of an off-deck instrument scene (for follow-up change summaries). */
+export function instrumentSceneParams(
+  p: Protocol,
+): { plateDisplay: string; plateKind: string; seconds?: number; rpm?: number; instrument?: string } | null {
+  const plate = p.deck.labware.find((l) => labwareDef(l.kind).category === 'plate')
+  if (!plate) return null
+  const inst = p.deck.instruments?.[0]
+  const run = p.steps.find((s) => s.kind === 'run_instrument')
+  return {
+    plateDisplay: plate.display,
+    plateKind: plate.kind,
+    seconds: run?.seconds,
+    rpm: run?.rpm,
+    instrument: inst ? instrumentDef(inst.kind).display : undefined,
+  }
+}
+
 /* ----------------------------------------------------------------- run state -- */
 
 export interface ModuleRun {
@@ -167,6 +210,18 @@ export interface ModuleRun {
   state?: string
 }
 
+/** Live state of an off-deck instrument for the run player / renderers. */
+export interface InstrumentRun {
+  /** A plate is currently seated inside. */
+  loaded: boolean
+  /** Actively running (spinning / imaging / …) — drives the rotor animation. */
+  running: boolean
+  /** Lid/door is open (plate is going in or out). */
+  lidOpen: boolean
+  rpm?: number
+  seconds?: number
+}
+
 export interface RunState {
   index: number
   pos: Point
@@ -175,12 +230,18 @@ export interface RunState {
   fills: Record<string, WellFill>
   slotOf: Record<string, string>
   modules: Record<string, ModuleRun>
+  /** Off-deck instrument state, keyed by instrument id. */
+  instruments: Record<string, InstrumentRun>
+  /** Labware id -> instrument id it is currently seated inside (overrides its deck slot). */
+  inInstrument: Record<string, string>
   /** Consumed tip wells per tiprack labware id (so racks visibly deplete). */
   tipsUsed: Record<string, Record<string, boolean>>
   current: Step | null
   dipping: boolean
   /** Labware currently held by the gripper mid-move (for the carry animation). */
   gripping?: { labwareId: string; toSlot: string } | null
+  /** Labware currently being carried to/from an off-deck instrument. */
+  handoff?: { labwareId: string; instrumentId: string; dir: 'in' | 'out' } | null
 }
 
 function fillKey(labwareId: string, well: string): string {
@@ -232,6 +293,12 @@ function emptyModules(p: Protocol): Record<string, ModuleRun> {
   return out
 }
 
+function emptyInstruments(p: Protocol): Record<string, InstrumentRun> {
+  const out: Record<string, InstrumentRun> = {}
+  for (const inst of p.deck.instruments ?? []) out[inst.id] = { loaded: false, running: false, lidOpen: false }
+  return out
+}
+
 function initialFills(p: Protocol): Record<string, WellFill> {
   const out: Record<string, WellFill> = {}
   for (const lab of p.deck.labware) {
@@ -248,6 +315,8 @@ export function deriveRun(p: Protocol, index: number): RunState {
   const slotOf: Record<string, string> = {}
   for (const lab of p.deck.labware) slotOf[lab.id] = lab.slot
   const modules = emptyModules(p)
+  const instruments = emptyInstruments(p)
+  const inInstrument: Record<string, string> = {}
   const tipsUsed: Record<string, Record<string, boolean>> = {}
   const channels = primaryPipette(p).channels
 
@@ -257,6 +326,7 @@ export function deriveRun(p: Protocol, index: number): RunState {
   let current: Step | null = null
   let dipping = false
   let gripping: RunState['gripping'] = null
+  let handoff: RunState['handoff'] = null
 
   const last = Math.min(index, p.steps.length - 1)
   for (let i = 0; i <= last; i++) {
@@ -264,6 +334,7 @@ export function deriveRun(p: Protocol, index: number): RunState {
     current = s
     dipping = s.kind === 'aspirate' || s.kind === 'dispense' || s.kind === 'mix'
     gripping = null
+    handoff = null
     const mod = s.moduleId ? modules[s.moduleId] : undefined
     switch (s.kind) {
       case 'pick_up_tip':
@@ -368,12 +439,50 @@ export function deriveRun(p: Protocol, index: number): RunState {
           mod.state = 'idle'
         }
         break
+      case 'load_instrument':
+        if (s.instrumentId && s.labwareId) {
+          inInstrument[s.labwareId] = s.instrumentId
+          const inst = instruments[s.instrumentId]
+          if (inst) {
+            inst.loaded = true
+            inst.lidOpen = true
+            inst.running = false
+          }
+          handoff = { labwareId: s.labwareId, instrumentId: s.instrumentId, dir: 'in' }
+          pos = homePos(geom)
+        }
+        break
+      case 'run_instrument':
+        if (s.instrumentId) {
+          const inst = instruments[s.instrumentId]
+          if (inst) {
+            inst.running = true
+            inst.lidOpen = false
+            inst.rpm = s.rpm
+            inst.seconds = s.seconds
+          }
+          pos = homePos(geom)
+        }
+        break
+      case 'unload_instrument':
+        if (s.instrumentId && s.labwareId) {
+          delete inInstrument[s.labwareId]
+          const inst = instruments[s.instrumentId]
+          if (inst) {
+            inst.loaded = false
+            inst.lidOpen = true
+            inst.running = false
+          }
+          handoff = { labwareId: s.labwareId, instrumentId: s.instrumentId, dir: 'out' }
+          pos = homePos(geom)
+        }
+        break
       case 'delay':
       case 'comment':
         break
     }
   }
-  return { index: last, pos, hasTip, tipLiquid, fills, slotOf, modules, tipsUsed, current, dipping, gripping }
+  return { index: last, pos, hasTip, tipLiquid, fills, slotOf, modules, instruments, inInstrument, tipsUsed, current, dipping, gripping, handoff }
 }
 
 /* ============================================================ scene generators = */
@@ -853,29 +962,151 @@ function normalization(): Protocol {
   }
 }
 
-/* ---- General (non-Opentrons) fallback scene + PyLabRobot script ---- */
+/* ---- General (non-Opentrons) scene: prep on-deck, then hand a plate to an instrument ---- */
 
-function generalRobotScene(request: string, capability: string, instrument: string): Protocol {
-  const liquids = mkLiquids([['Sample', 3], ['Buffer', 0]])
-  const sample = liquids[0].id
-  const buffer = liquids[1].id
-  const steps: Step[] = [
-    { kind: 'comment', label: `Plan: ${request.trim().slice(0, 80)}` },
-    { kind: 'pick_up_tip', labwareId: 'tips', well: 'A1', label: 'Pick up tips' },
-  ]
-  for (let c = 1; c <= 6; c++) {
-    steps.push({ kind: 'aspirate', labwareId: 'res', well: 'A1', volume: 100, liquid: buffer, label: 'Aspirate 100 µL · buffer' })
-    steps.push({ kind: 'dispense', labwareId: 'plate', well: `A${c}`, volume: 100, liquid: buffer, label: `Prep samples · column ${c}` })
+const PLATE_BY_COUNT: Record<number, string> = {
+  6: 'wellplate_6',
+  12: 'wellplate_12',
+  24: 'wellplate_24',
+  48: 'wellplate_48',
+  96: 'wellplate_96',
+  384: 'wellplate_384',
+}
+
+/** The well-plate a request names ("24 well plate" -> wellplate_24), else a 96-well default. */
+export function plateKindFromRequest(request: string): string {
+  const m = request.toLowerCase().match(/(\d{1,3})[\s-]*well/)
+  if (m) {
+    const n = Number(m[1])
+    if (PLATE_BY_COUNT[n]) return PLATE_BY_COUNT[n]
   }
-  steps.push({ kind: 'drop_tip', label: 'Drop tips' })
-  steps.push({ kind: 'move_labware', labwareId: 'plate', toSlot: '5', label: `Move plate → ${instrument}` })
-  steps.push({ kind: 'delay', seconds: 300, label: `Run ${capability} on the ${instrument}` })
-  steps.push({ kind: 'move_labware', labwareId: 'plate', toSlot: '3', label: 'Return plate → deck' })
-  steps.push({ kind: 'comment', label: `${capability} result texted back + ingested into memory` })
+  return 'wellplate_96'
+}
+
+/** Parse a run duration + speed from the request ("spin for 10 seconds", "2 min at 3000 rpm"). */
+export function spinParamsFromRequest(request: string): { seconds: number; rpm?: number } {
+  const q = request.toLowerCase()
+  let seconds = 0
+  const min = q.match(/(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min)\b/)
+  const sec = q.match(/(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b/)
+  if (min) seconds += Math.round(Number(min[1]) * 60)
+  if (sec) seconds += Math.round(Number(sec[1]))
+  if (!seconds) seconds = 10 // a sensible default spin
+  const rpm = q.match(/(\d[\d,]*)\s*(?:rpm|rcf|x\s*g|×\s*g)\b/)
+  return { seconds, rpm: rpm ? Number(rpm[1].replace(/,/g, '')) : undefined }
+}
+
+function humanTime(s: number): string {
+  if (s < 60) return `${s} s`
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return r ? `${m} min ${r} s` : `${m} min`
+}
+
+function runLabel(idef: InstrumentDef, seconds: number, rpm?: number): string {
+  const base = `${cap(idef.verb)} ${humanTime(seconds)}`
+  return rpm ? `${base} · ${rpm.toLocaleString()} rpm` : base
+}
+
+/** A tidy per-well fill volume scaled to the plate size (µL). */
+function perWellVolume(capUl: number): number {
+  return Math.max(20, Math.min(250, Math.round((capUl * 0.35) / 10) * 10))
+}
+
+interface InstrumentSceneOpts {
+  kind: InstrumentKind
+  plateKind: string
+  seconds: number
+  rpm?: number
+  /** Text used for the plan comment / fallback note (the request or the follow-up edit). */
+  requestLabel: string
+}
+
+function generalRobotScene(request: string, gap: CapabilityGap): Protocol {
+  return composeInstrumentScene({
+    kind: gap.kind,
+    plateKind: plateKindFromRequest(request),
+    ...spinParamsFromRequest(request),
+    requestLabel: request,
+  })
+}
+
+/**
+ * Continue a conversation on an off-deck instrument scene — the "it remembers" edit path. Given the
+ * previous protocol and a follow-up ("spin it for 30 seconds", "make it a 48-well plate", "faster"),
+ * carry forward every parameter and override only what the follow-up changes, then rebuild. Returns
+ * null when the follow-up isn't an instrument-scene edit (the caller then generates fresh).
+ */
+export function editInstrumentScene(last: Protocol, query: string): Protocol | null {
+  const q = query.toLowerCase()
+  const plate = last.deck.labware.find((l) => labwareDef(l.kind).category === 'plate')
+  if (!plate) return null
+  const inst = last.deck.instruments?.[0]
+  const gapNow = capabilityGap(query) // e.g. "image it instead" -> microscope
+  if (!inst && !gapNow) return null // nothing instrument-related to continue
+
+  const kind: InstrumentKind = gapNow?.kind ?? inst!.kind
+  const runStep = last.steps.find((s) => s.kind === 'run_instrument')
+
+  // plate size — only override when the follow-up actually names a well count
+  let plateKind = plate.kind
+  if (/\d{1,3}[\s-]*well/.test(q)) plateKind = plateKindFromRequest(query)
+
+  // duration
+  let seconds = runStep?.seconds ?? 10
+  const parsed = spinParamsFromRequest(query)
+  if (/\b(seconds?|secs?|minutes?|mins?)\b/.test(q)) seconds = parsed.seconds
+  else if (/\b(longer|more time|keep spinning)\b/.test(q)) seconds = Math.round(seconds * 2)
+  else if (/\b(shorter|less time|quick(er|ly)?|briefly)\b/.test(q)) seconds = Math.max(1, Math.round(seconds / 2))
+
+  // speed
+  let rpm = runStep?.rpm
+  if (/\b(rpm|rcf|x\s*g)\b/.test(q)) rpm = parsed.rpm
+  else if (/\b(faster|harder|higher|max speed)\b/.test(q)) rpm = Math.round((rpm ?? 3000) * 1.5)
+  else if (/\b(slower|gentl(e|er|y)|lower speed|soft)\b/.test(q)) rpm = Math.round((rpm ?? 3000) / 1.5)
+
+  return composeInstrumentScene({ kind, plateKind, seconds, rpm, requestLabel: query })
+}
+
+function composeInstrumentScene(o: InstrumentSceneOpts): Protocol {
+  const idef = instrumentDef(o.kind)
+  const plateKind = o.plateKind
+  const pdef = labwareDef(plateKind)
+  const wellCount = pdef.rows * pdef.cols
+  const perWell = perWellVolume(pdef.wellUl ?? 300)
+  const seconds = o.seconds
+  const rpm = o.rpm
+  const request = o.requestLabel
+
+  const liquids = mkLiquids([['Sample', 3]])
+  const sample = liquids[0].id
+  const instId = 'inst'
+  const plateId = 'plate'
+  const lower = idef.display.toLowerCase()
+
+  // Fill EVERY well of the plate — single channel, one tip, well by well (the request's
+  // "pipette every well"). A 24-well plate is on a 19 mm pitch, so an 8-channel head can't span it.
+  const wells: string[] = []
+  for (let r = 0; r < pdef.rows; r++) for (let c = 0; c < pdef.cols; c++) wells.push(rcToWell(r, c))
+
+  const steps: Step[] = [
+    { kind: 'comment', label: `Plan: ${request.trim().slice(0, 90)}` },
+    { kind: 'pick_up_tip', labwareId: 'tips', well: 'A1', label: 'Pick up tip' },
+  ]
+  for (const w of wells) {
+    steps.push({ kind: 'aspirate', labwareId: 'res', well: 'A1', volume: perWell, liquid: sample, label: `Aspirate ${perWell} µL · sample` })
+    steps.push({ kind: 'dispense', labwareId: plateId, well: w, volume: perWell, liquid: sample, label: `Dispense ${perWell} µL · ${w}` })
+  }
+  steps.push({ kind: 'drop_tip', label: 'Drop tip' })
+  steps.push({ kind: 'load_instrument', instrumentId: instId, labwareId: plateId, label: `Robot arm → load plate into the ${lower}` })
+  steps.push({ kind: 'run_instrument', instrumentId: instId, seconds, rpm, label: runLabel(idef, seconds, rpm) })
+  steps.push({ kind: 'unload_instrument', instrumentId: instId, labwareId: plateId, label: 'Robot arm → return plate to the deck' })
+  steps.push({ kind: 'comment', label: `${cap(idef.capability)} result texted back + ingested into memory` })
+
   return {
     id: nextId('gen'),
-    name: `${cap(capability)} run`,
-    description: `Prep on-deck, then hand off to the ${instrument}`,
+    name: `${cap(idef.capability)} run`,
+    description: `Fill every well of the ${pdef.display}, then ${idef.verb} it for ${humanTime(seconds)}`,
     mode: 'general',
     platformLabel: 'General lab robot · PyLabRobot',
     liquids,
@@ -884,52 +1115,77 @@ function generalRobotScene(request: string, capability: string, instrument: stri
       pipettes: [pip('p300_single_gen2')],
       modules: [],
       accessories: [{ kind: 'gripper', display: 'Robot arm' }],
+      instruments: [{ id: instId, kind: o.kind, display: idef.display, label: idef.display, side: 'right' }],
       labware: [
         lw('tips', 'tiprack_300', '1'),
-        lw('res', 'reservoir_12', '2', { label: 'Buffer', initial: { A1: { liquid: buffer, volume: 12000 } } }),
-        lw('plate', 'wellplate_96', '3', { label: 'Sample plate', initial: allWells('wellplate_96', sample, 40) }),
-        lw('station', 'wellplate_6', '5', { label: instrument }),
+        lw('res', 'reservoir_12', '2', { label: 'Sample', initial: { A1: { liquid: sample, volume: 12000 } } }),
+        lw(plateId, plateKind, '3', { label: `${pdef.display}` }),
       ],
     },
     steps,
     codeLang: 'PyLabRobot',
-    fallbackNote: `${cap(capability)} isn't a native Opentrons deck capability — this scene models a general lab robot (arm + ${instrument}). The steps and PyLabRobot script are what such a robot would run; nothing executes here.`,
-    code: pylabrobotScript(request, capability, instrument),
+    fallbackNote: `${cap(idef.capability)} isn't a native Opentrons deck capability, so Claymore composed a general lab-robot scene: it fills the ${pdef.display} on-deck, a robot arm hands it to the ${lower}, and the ${lower} runs the ${idef.verb}. The scene + PyLabRobot script are what such a robot would run; nothing executes here.`,
+    code: pylabrobotScript(request, idef, wellCount, perWell, seconds, rpm),
   }
 }
 
-function pylabrobotScript(request: string, capability: string, instrument: string): string {
-  const inst = instrument.replace(/[^a-z0-9]+/gi, '_').toLowerCase().replace(/^_|_$/g, '')
+function pylabrobotScript(request: string, idef: InstrumentDef, wellCount: number, perWell: number, seconds: number, rpm?: number): string {
+  const cls = idef.kind === 'centrifuge' ? 'Centrifuge' : `${cap(idef.kind.replace(/_/g, ' ')).replace(/ /g, '')}`
+  const plateRes = `Cor_${wellCount}_wellplate`
+  const spinArgs = rpm ? `rpm=${rpm}, seconds=${seconds}` : `seconds=${seconds}`
   return (
-    '"""Generated by Claymore — a general lab-robot plan (not Opentrons).\n' +
-    `Request: ${request.trim().slice(0, 100)}\n` +
-    'Runs on any PyLabRobot-supported deck; the off-deck step drives an external instrument.\n' +
+    '"""Generated by Claymore — a general lab-robot plan (off the Opentrons deck).\n' +
+    `Request: ${request.trim().slice(0, 110)}\n` +
+    `Prep the plate on-deck, then a robot arm hands it to the ${idef.display.toLowerCase()}.\n` +
+    'Runs on any PyLabRobot-supported deck; the off-deck step drives the instrument over its API.\n' +
     '"""\n' +
-    'import asyncio\n' +
+    'import asyncio\n\n' +
     'from pylabrobot.liquid_handling import LiquidHandler\n' +
     'from pylabrobot.liquid_handling.backends import ChatterboxBackend\n' +
-    'from pylabrobot.resources import Deck, Cos_96_wellplate_360ul, HTF_L\n\n\n' +
-    'async def main():\n' +
+    `from pylabrobot.resources import Deck, ${plateRes}, HTF_L, Cor_12_reservoir\n\n` +
+    `FILL_UL = ${perWell}\n\n\n` +
+    'async def main() -> None:\n' +
     '    lh = LiquidHandler(backend=ChatterboxBackend(), deck=Deck())\n' +
     '    await lh.setup()\n\n' +
     '    tips = HTF_L(name="tips")\n' +
-    '    plate = Cos_96_wellplate_360ul(name="sample_plate")\n' +
+    `    plate = ${plateRes}(name="sample_plate")\n` +
+    '    reservoir = Cor_12_reservoir(name="reservoir")\n' +
     '    lh.deck.assign_child_resource(tips, location=(0, 0, 0))\n' +
-    '    lh.deck.assign_child_resource(plate, location=(150, 0, 0))\n\n' +
-    '    # 1) prep the samples on-deck\n' +
-    '    await lh.pick_up_tips(tips["A1:H1"])\n' +
-    '    for col in range(6):\n' +
-    '        await lh.aspirate(plate[f"A{col + 1}"], vols=[100])\n' +
-    '        await lh.dispense(plate[f"A{col + 1}"], vols=[100])\n' +
-    '    await lh.drop_tips(tips["A1:H1"])\n\n' +
-    `    # 2) hand the plate to the ${instrument} (${capability})\n` +
-    `    await ${inst}_run(plate)\n\n` +
+    '    lh.deck.assign_child_resource(reservoir, location=(150, 0, 0))\n' +
+    '    lh.deck.assign_child_resource(plate, location=(300, 0, 0))\n\n' +
+    `    # 1) fill every one of the plate's ${wellCount} wells\n` +
+    '    await lh.pick_up_tips(tips["A1"])\n' +
+    '    for well in plate.get_all_items():\n' +
+    '        await lh.aspirate(reservoir["A1"], vols=[FILL_UL])\n' +
+    '        await lh.dispense(well, vols=[FILL_UL])\n' +
+    '    await lh.drop_tips(tips["A1"])\n\n' +
+    `    # 2) hand the plate to the ${idef.display.toLowerCase()} and run it\n` +
+    `    await ${cls}().run(plate, ${spinArgs})\n\n` +
     '    await lh.stop()\n\n\n' +
-    `async def ${inst}_run(plate):\n` +
-    `    """Drive the ${instrument} over its own API, then return the plate to the deck.\n` +
-    `    Claymore texts the ${capability} result back and ingests it into lab memory."""\n` +
-    '    # e.g. instrument.load(plate); await instrument.run(); result = instrument.read()\n' +
-    '    await asyncio.sleep(0)  # placeholder for the vendor call\n\n\n' +
+    `class ${cls}:\n` +
+    `    """Thin async driver over the ${idef.display.toLowerCase()}'s vendor API.\n\n` +
+    `    Claymore texts the ${idef.capability} result back and ingests it into lab memory."""\n\n` +
+    (idef.kind === 'centrifuge'
+      ? '    async def run(self, plate, *, seconds, rpm=3000):\n' +
+        '        await self.open_lid()\n' +
+        '        await self.load(plate)          # robot arm seats the plate in a rotor bucket\n' +
+        '        await self.close_lid()\n' +
+        '        await self.spin(rpm=rpm, seconds=seconds)\n' +
+        '        await self.open_lid()\n' +
+        '        return await self.unload()      # arm returns the plate to the deck\n\n' +
+        '    async def spin(self, *, rpm, seconds):\n' +
+        '        await self._cmd(f"SET_SPEED {rpm}")\n' +
+        '        await self._cmd("START")\n' +
+        '        await asyncio.sleep(seconds)\n' +
+        '        await self._cmd("STOP")\n' +
+        '        await self._wait_for_rotor_stop()\n'
+      : '    async def run(self, plate, *, seconds, **params):\n' +
+        '        await self.load(plate)\n' +
+        `        await self._cmd("RUN", seconds=seconds, **params)  # ${idef.verb} the plate\n` +
+        '        return await self.unload()\n') +
+    '\n' +
+    '    async def _cmd(self, *args, **kwargs):\n' +
+    '        await asyncio.sleep(0)  # vendor serial/HTTP call goes here\n\n\n' +
     'if __name__ == "__main__":\n' +
     '    asyncio.run(main())\n'
   )
@@ -962,7 +1218,7 @@ export type SceneResult = { protocol: Protocol }
  *  capability a liquid handler lacks becomes a general lab-robot scene + a PyLabRobot script. */
 export function generateScene(request: string): SceneResult {
   const gap = capabilityGap(request)
-  if (gap) return { protocol: generalRobotScene(request, gap.capability, gap.instrument) }
+  if (gap) return { protocol: generalRobotScene(request, gap) }
   for (const r of RECIPES) if (r.match.test(request)) return { protocol: r.build() }
   return { protocol: fillPlate() }
 }

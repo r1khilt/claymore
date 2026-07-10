@@ -36,13 +36,14 @@ import itertools
 import json
 import re
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from claymore.agent import Citation, RequestContext
+from claymore.agent.conversation import MAX_TURNS
 from claymore.agent.hardware import (
     ACCESSORIES,
     LABWARE,
@@ -78,6 +79,10 @@ _log = get_logger("agent.loop")
 # Bound the tool loop: a handful of retrieval/build steps is plenty for one Composer turn, and a
 # hard cap is the defense against a runaway/looping model (cost + latency, R6/SECURITY.md).
 _MAX_ITERATIONS = 6
+
+# Keep at most the last N prior turns when seeding conversation history, bounding context/token
+# growth on a long chat. Shares the conversation store's rolling cap so the two never diverge.
+_MAX_HISTORY_TURNS = MAX_TURNS
 
 # Per-turn output budget. Non-streaming ``create`` per iteration stays well under the SDK's
 # ~10-minute timeout at this size; it also bounds model output defensively (SECURITY.md). Scene
@@ -660,12 +665,60 @@ class _ToolOutcome(BaseModel):
     events: list[AgentEvent] = []
 
 
+# One prior conversation turn as the route hands it in: ``(role, text)`` where ``role`` is the
+# frontend's vocabulary — ``"user"`` or ``"agent"`` (NOT ``"assistant"``). The mapping to the
+# Anthropic ``assistant`` role happens in ``_history_messages``.
+HistoryTurn = tuple[Literal["user", "agent"], str]
+
+
+def _history_messages(history: Sequence[HistoryTurn]) -> list[MessageParam]:
+    """Turn prior ``(role, text)`` turns into a valid, strictly-alternating Anthropic message list.
+
+    History text is untrusted DATA (CLAUDE.md hard rule 7): it enters ONLY as prior ``user`` /
+    ``assistant`` message content — never as a system instruction or tool input, and it is never
+    eval'd/exec'd or formatted into code. The model treats these exactly as earlier chat turns.
+
+    Normalization to what the API requires:
+
+    * keep only the last :data:`_MAX_HISTORY_TURNS` turns (bounds token growth);
+    * skip empty/whitespace-only texts;
+    * map ``"user"`` -> ``"user"`` and ``"agent"`` -> ``"assistant"``;
+    * drop any leading ``assistant`` turns so the list starts with ``user``;
+    * collapse consecutive same-role turns by joining their text with a newline, so the result
+      strictly alternates user/assistant.
+
+    The caller appends the current user query after this, so the final ``messages`` list still
+    starts with ``user`` and ends with the current user turn.
+    """
+    # (role, text) pairs, mapped + filtered, keeping only the most recent turns.
+    mapped: list[tuple[Literal["user", "assistant"], str]] = []
+    for role, text in history[-_MAX_HISTORY_TURNS:]:
+        clean = text.strip()
+        if not clean:
+            continue
+        mapped.append(("assistant" if role == "agent" else "user", clean))
+
+    # Drop leading assistant turns: a valid conversation starts with a user message.
+    while mapped and mapped[0][0] == "assistant":
+        mapped.pop(0)
+
+    # Collapse consecutive same-role turns so the sequence strictly alternates user/assistant.
+    messages: list[MessageParam] = []
+    for api_role, clean in mapped:
+        if messages and messages[-1]["role"] == api_role:
+            messages[-1] = {"role": api_role, "content": f"{messages[-1]['content']}\n{clean}"}
+        else:
+            messages.append({"role": api_role, "content": clean})
+    return messages
+
+
 async def run_agent(
     ctx: RequestContext,
     query: str,
     store: MemoryStore,
     settings: Settings,
     *,
+    history: Sequence[HistoryTurn] | None = None,
     max_iterations: int | None = None,
     max_tokens: int | None = None,
 ) -> AsyncIterator[AgentEvent]:
@@ -674,6 +727,11 @@ async def run_agent(
     Grounding, the untrusted-data posture, and the propose-don't-execute rule are enforced here
     and stated to the model. The caller (the SSE endpoint) is responsible for gating on the key —
     this reaches the SDK, so it must only be invoked when ``settings.anthropic_api_key`` is set.
+
+    ``history`` is the prior turns of THIS conversation as ``(role, text)`` pairs, oldest-first and
+    NOT including the current ``query`` (``role`` is the frontend's ``"user"`` / ``"agent"``). It
+    seeds the ``messages`` list before the current query so the model has multi-turn memory. It is
+    untrusted DATA — see :func:`_history_messages` — never instructions.
 
     ``max_iterations`` / ``max_tokens`` let the caller override the loop budget from the stored
     reasoning level (see ``local_store.reasoning_budget``); both default to the module constants.
@@ -687,7 +745,10 @@ async def run_agent(
     iter_cap = max_iterations if max_iterations and max_iterations > 0 else _MAX_ITERATIONS
     token_cap = max_tokens if max_tokens and max_tokens > 0 else _MAX_TOKENS
 
-    messages: list[MessageParam] = [{"role": "user", "content": query}]
+    # Seed prior turns (normalized to a valid alternating list) BEFORE the current query, so the
+    # model remembers the conversation. History is untrusted data, added only as message content.
+    messages: list[MessageParam] = _history_messages(history or [])
+    messages.append({"role": "user", "content": query})
     # Facts accumulate across search calls so the final answer's citations cover everything the
     # loop grounded in — computed from provenance, never from the model (anti-fabrication).
     grounded: list[Fact] = []

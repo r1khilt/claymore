@@ -168,3 +168,21 @@ export function trashPos(geom: DeckGeom): Point {
   const r = slotRect(geom, slot)
   return { x: r.x + r.w / 2, y: r.y + r.h / 2 }
 }
+
+/* ---- off-deck instruments (centrifuge, imager…) sit on the benchtop beside the deck ---- */
+
+/** Footprint of an off-deck instrument, in deck coordinates (a touch larger than a slot). */
+export const INSTRUMENT_W = SLOT_W * 1.75
+export const INSTRUMENT_H = SLOT_H * 2.3
+const INSTRUMENT_GAP = 30
+
+/** Where an off-deck instrument sits, in the same coordinate space as slots but *outside* the deck
+ *  grid. `side` picks which edge of the deck it stands next to; `index` stacks multiples. */
+export function instrumentRect(geom: DeckGeom, side: 'right' | 'left' | 'back', index = 0): Rect {
+  const w = INSTRUMENT_W
+  const h = INSTRUMENT_H
+  const stackY = geom.height / 2 - h / 2 + index * (h + 24)
+  if (side === 'left') return { x: -INSTRUMENT_GAP - w, y: stackY, w, h }
+  if (side === 'back') return { x: geom.width / 2 - w / 2 + index * (w + 24), y: -INSTRUMENT_GAP - h, w, h }
+  return { x: geom.width + INSTRUMENT_GAP, y: stackY, w, h } // right (default)
+}

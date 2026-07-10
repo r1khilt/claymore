@@ -973,14 +973,16 @@ const PLATE_BY_COUNT: Record<number, string> = {
   384: 'wellplate_384',
 }
 
-/** The well-plate a request names ("24 well plate" -> wellplate_24), else a 96-well default. */
+/** The well-plate a request names ("24 well plate" -> wellplate_24). An unsupported count snaps to
+ *  the nearest real plate ("324-well" -> the 384-well), never a silent 96-well default. */
 export function plateKindFromRequest(request: string): string {
-  const m = request.toLowerCase().match(/(\d{1,3})[\s-]*well/)
-  if (m) {
-    const n = Number(m[1])
-    if (PLATE_BY_COUNT[n]) return PLATE_BY_COUNT[n]
-  }
-  return 'wellplate_96'
+  const m = request.toLowerCase().match(/(\d{1,4})[\s-]*well/)
+  if (!m) return 'wellplate_96'
+  const n = Number(m[1])
+  if (PLATE_BY_COUNT[n]) return PLATE_BY_COUNT[n]
+  const counts = Object.keys(PLATE_BY_COUNT).map(Number)
+  const nearest = counts.reduce((a, b) => (Math.abs(b - n) < Math.abs(a - n) ? b : a))
+  return PLATE_BY_COUNT[nearest]
 }
 
 /** Parse a run duration + speed from the request ("spin for 10 seconds", "2 min at 3000 rpm"). */

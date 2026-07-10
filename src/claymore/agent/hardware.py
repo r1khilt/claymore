@@ -75,6 +75,25 @@ class Accessory:
     robots: tuple[Robot, ...]
 
 
+@dataclass(frozen=True)
+class Instrument:
+    """An off-deck benchtop instrument a liquid handler can't be (a centrifuge, an imager…).
+
+    These are NOT Opentrons labware/modules — they stand on the bench beside the deck, and a robot
+    arm hands a plate to them. The 2D/3D engines draw a bespoke animated model per ``kind``; the
+    extra hints (``verb``/``spins``/``lid``) drive that animation and the run-log copy.
+    """
+
+    kind: str
+    display: str
+    capability: str  # human phrase, e.g. "centrifugation"
+    short: str
+    tint: str
+    verb: str  # "spin", "image", "weigh"…
+    spins: bool = False  # renders as a rotational spin (3D rotor)
+    lid: bool = False  # has an opening lid/door the plate loads under
+
+
 # --- pipettes (keyed by model load string; the model is what a protocol calls) ----------------
 
 PIPETTES: dict[str, Pipette] = {
@@ -459,6 +478,104 @@ ACCESSORIES: dict[str, Accessory] = {
 }
 
 
+# --- off-deck instruments (mirror web/src/lib/hardware.ts INSTRUMENTS) -------------------------
+
+INSTRUMENTS: dict[str, Instrument] = {
+    "centrifuge": Instrument(
+        "centrifuge",
+        "Benchtop centrifuge",
+        "centrifugation",
+        "SPIN",
+        "#3f6f9c",
+        "spin",
+        spins=True,
+        lid=True,
+    ),
+    "microscope": Instrument(
+        "microscope",
+        "Automated microscope",
+        "imaging / microscopy",
+        "IMG",
+        "#5b7d8a",
+        "image",
+    ),
+    "balance": Instrument(
+        "balance",
+        "Analytical balance",
+        "weighing",
+        "MASS",
+        "#6f7268",
+        "weigh",
+        lid=True,
+    ),
+    "incubator": Instrument(
+        "incubator",
+        "CO₂ incubator",
+        "CO₂ cell culture",
+        "INC",
+        "#5f8257",
+        "incubate",
+        lid=True,
+    ),
+    "sequencer": Instrument(
+        "sequencer",
+        "Sequencer",
+        "sequencing",
+        "SEQ",
+        "#5a5ea8",
+        "sequence",
+        lid=True,
+    ),
+    "electroporator": Instrument(
+        "electroporator",
+        "Electroporator",
+        "electroporation",
+        "EP",
+        "#b4623f",
+        "pulse",
+        lid=True,
+    ),
+    "sonicator": Instrument(
+        "sonicator",
+        "Sonicator",
+        "sonication",
+        "SON",
+        "#7a5ea8",
+        "sonicate",
+    ),
+    "cytometer": Instrument(
+        "cytometer",
+        "Flow cytometer",
+        "flow cytometry",
+        "FACS",
+        "#2f7d7a",
+        "analyze",
+    ),
+    "colony_picker": Instrument(
+        "colony_picker",
+        "Colony picker",
+        "colony picking",
+        "PICK",
+        "#c67f3d",
+        "pick",
+    ),
+    "generic": Instrument(
+        "generic",
+        "Benchtop instrument",
+        "off-deck processing",
+        "INST",
+        "#6f7268",
+        "process",
+        lid=True,
+    ),
+}
+
+
+def instrument_def(kind: str) -> Instrument:
+    """The catalog entry for an off-deck instrument ``kind`` (``generic`` for anything unknown)."""
+    return INSTRUMENTS.get(kind, INSTRUMENTS["generic"])
+
+
 # --- liquid palette (warm, legible; assigned round-robin by the generators) -------------------
 
 LIQUID_PALETTE: tuple[str, ...] = (
@@ -486,6 +603,7 @@ class CapabilityGap:
 
     capability: str
     instrument: str
+    kind: str = "generic"  # which INSTRUMENTS entry models it (drives the bespoke 3D model)
 
 
 @dataclass(frozen=True)
@@ -493,6 +611,7 @@ class _Gap:
     keywords: tuple[str, ...]
     capability: str
     instrument: str
+    kind: str
 
 
 _GAPS: tuple[_Gap, ...] = (
@@ -500,27 +619,36 @@ _GAPS: tuple[_Gap, ...] = (
         ("centrifuge", "spin down", "spin-down", "spinning down", "pellet the"),
         "centrifugation",
         "benchtop centrifuge",
+        "centrifuge",
     ),
     _Gap(
         ("microscope", "microscopy", "image the", "imaging", "photograph", "confocal"),
         "imaging / microscopy",
         "automated microscope",
+        "microscope",
     ),
-    _Gap(("weigh", "weighing", "balance", "gravimetric"), "weighing", "analytical balance"),
+    _Gap(
+        ("weigh", "weighing", "balance", "gravimetric"),
+        "weighing",
+        "analytical balance",
+        "balance",
+    ),
     _Gap(
         ("co2 incubat", "cell culture incubat", "tissue culture incubat", "passage cells"),
         "CO₂ cell culture",
         "CO₂ incubator + cell shuttle",
+        "incubator",
     ),
     _Gap(
         ("sequencing", "sequencer", "nanopore", "illumina", "minion"),
         "sequencing",
         "sequencer (Illumina / ONT)",
+        "sequencer",
     ),
-    _Gap(("electroporat",), "electroporation", "electroporator"),
-    _Gap(("sonicat",), "sonication", "sonicator"),
-    _Gap(("flow cytometr", "facs"), "flow cytometry", "flow cytometer"),
-    _Gap(("colony pick", "colony-pick"), "colony picking", "colony picker"),
+    _Gap(("electroporat",), "electroporation", "electroporator", "electroporator"),
+    _Gap(("sonicat",), "sonication", "sonicator", "sonicator"),
+    _Gap(("flow cytometr", "facs"), "flow cytometry", "flow cytometer", "cytometer"),
+    _Gap(("colony pick", "colony-pick"), "colony picking", "colony picker", "colony_picker"),
 )
 
 
@@ -530,7 +658,7 @@ def capability_gap(request: str) -> CapabilityGap | None:
     for gap in _GAPS:
         for keyword in gap.keywords:
             if _keyword_hit(text, keyword):
-                return CapabilityGap(gap.capability, gap.instrument)
+                return CapabilityGap(gap.capability, gap.instrument, gap.kind)
     return None
 
 
@@ -558,10 +686,12 @@ def catalog_summary() -> str:
     labware = ", ".join(sorted(LABWARE))
     modules = ", ".join(sorted(MODULES))
     accessories = ", ".join(sorted(ACCESSORIES))
+    instruments = ", ".join(sorted(INSTRUMENTS))
     return (
         f"Robots: OT-2, Flex.\n"
         f"Pipettes: {pipettes}.\n"
         f"Labware kinds: {labware}.\n"
         f"Modules: {modules}.\n"
-        f"Accessories: {accessories}."
+        f"Accessories: {accessories}.\n"
+        f"Off-deck instruments (general lab-robot fallback): {instruments}."
     )

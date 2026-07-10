@@ -20,8 +20,9 @@ logs:  ## Tail the local stack logs
 fmt:  ## Auto-format
 	ruff format src tests evals
 
-lint:  ## Lint
+lint:  ## Lint + format check (matches CI)
 	ruff check src tests evals
+	ruff format --check src tests evals
 
 typecheck:  ## Strict type check (CI gate)
 	mypy src

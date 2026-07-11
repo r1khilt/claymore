@@ -28,7 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+import hashlib
 import ipaddress
+import json
+import math
 import os
 import re
 import uuid
@@ -56,6 +60,52 @@ _DEFAULT_CLI = "~/.claude-science/bin/claude-science"
 _TERMINAL_OK = {"completed"}
 _TERMINAL_BAD = {"error", "failed", "cancelled", "canceled", "aborted"}
 
+# Real-figure extraction (live path only). We don't know Claude Science's exact frame schema for
+# artifacts, so extraction is *shape*-based (detect image-shaped values wherever they sit) rather
+# than keyed to one guessed field — robust to schema drift, and it surfaces nothing when the frame
+# genuinely has no images (no fabrication). Bounds keep a hostile/huge frame from exhausting memory.
+_ALLOWED_IMAGE_MEDIA = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
+    "image/bmp",
+    "image/avif",
+}
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif")
+# Keys whose string value we treat as a possible image reference (a data: URL or an image file).
+_IMAGE_REF_KEYS = (
+    "image",
+    "image_url",
+    "screenshot",
+    "thumbnail",
+    "preview",
+    "url",
+    "uri",
+    "src",
+    "href",
+    "path",
+    "file_path",
+    "download_url",
+)
+_MAX_FIGURES = 12  # cap the gallery; a run rarely produces more real figures than this
+_MAX_FILES = 12  # cap the non-image download list
+_MAX_FIGURE_BYTES = 4_000_000  # ~4 MB decoded per figure — skip anything larger
+_MAX_FILE_BYTES = 2_000_000  # inline a non-image artifact as a download up to ~2 MB; else name-only
+_MAX_LIST_BYTES = 8_000_000  # cap the artifacts-list response body (metadata is small; bound it)
+_MAX_ARTIFACT_RECORDS = 500  # process at most this many artifact records per frame
+_WALK_MAX_DEPTH = 14  # frames nest (output_data → messages → content → source); bound recursion
+_WALK_MAX_NODES = 40_000  # hard ceiling on nodes visited so a pathological frame can't hang us
+_MAX_CHILD_FRAMES = 8  # sub-agent frames we'll fetch to find figures they produced
+
+# Real Claude Science artifact API (verified against the live daemon): every figure/dataset a run
+# saves is a downloadable artifact. List a frame's artifacts, then GET the bytes by id. This is the
+# authoritative source of a run's visual output — figures live here, NOT inline in the frame JSON.
+_FRAME_ARTIFACTS_EP = "/api/frames/{frame_id}/artifacts"
+_ARTIFACT_EP = "/api/artifacts/{artifact_id}"
+
 
 class _ScienceUnavailable(Exception):
     """The local daemon is reachable but we couldn't sign in / start / read a run — degrade to a
@@ -72,14 +122,44 @@ class ScienceMetric(BaseModel):
 class ScienceStep(BaseModel):
     """One observed step of Claude Science working — an action + a rendered frame of the result.
 
-    ``screenshot`` is a self-contained ``data:`` URL (an inline SVG frame) so the web client can
-    render it with no extra fetch or asset host — same contract in live and simulated modes.
+    ``screenshot`` is a self-contained ``data:`` URL so the web client can render it with no extra
+    fetch or asset host. In a **live** run it is a *real* figure Claude Science produced at that
+    step (or ``None`` when the step had no visual output — we never draw a fake window over a real
+    run); in the **simulated** preview it is an inline SVG frame, clearly labelled as a preview.
     """
 
     index: int
     action: str
     detail: str
     screenshot: str | None = None
+
+
+class ScienceFigure(BaseModel):
+    """One real visual artifact a Claude Science run produced — a plot, chart, structure render, or
+    image, downloaded from the run's saved artifacts (or extracted inline as a fallback).
+
+    ``image`` is a self-contained ``data:`` URL so the web client renders it inline with no asset
+    host (and it survives being persisted in the local chat store). Figures are populated on a
+    **live** run only; the simulated preview never fabricates them (CLAUDE.md hard rule 1 — no
+    invented grounding).
+    """
+
+    title: str
+    image: str
+    caption: str | None = None
+
+
+class ScienceFile(BaseModel):
+    """A non-image artifact a run produced (e.g. a dataset CSV), surfaced as a download.
+
+    ``download`` is a self-contained ``data:`` URL for files small enough to inline; ``None`` for
+    ones too large to embed (the UI then just names the file). Populated on a live run only.
+    """
+
+    name: str
+    content_type: str
+    size_bytes: int
+    download: str | None = None
 
 
 class ScienceSession(BaseModel):
@@ -89,6 +169,10 @@ class ScienceSession(BaseModel):
     (``completed``) or a preview (``simulated`` / ``unreachable`` / ``error``) — we never dress a
     simulation, or an incomplete run, up as a real result (CLAUDE.md hard rule 1: no fabricated
     grounding).
+
+    ``figures`` are the run's real visual output (graphs/charts/structures) and ``files`` its other
+    saved artifacts (datasets, etc.), downloaded from the run on a live drive and rendered as a
+    gallery + download list; both empty on a preview.
     """
 
     task: str
@@ -99,6 +183,8 @@ class ScienceSession(BaseModel):
     result_title: str
     result_summary: str
     metrics: list[ScienceMetric] = []
+    figures: list[ScienceFigure] = []
+    files: list[ScienceFile] = []
     note: str | None = None
 
 
@@ -210,22 +296,25 @@ async def _run_api(
     ) as client:
         await _authenticate(client, settings)
         steps: list[ScienceStep] = []
+        # Artifact ids already streamed as 'render' steps, so a figure the run saves is previewed
+        # once even though it persists on every subsequent poll.
+        seen_art_ids: set[str] = set()
+        seen_inline: set[str] = set()
 
-        def step(action: str, detail: str, badge: str, *, subtle: bool = False) -> ScienceStep:
+        def step(action: str, detail: str, *, screenshot: str | None = None) -> ScienceStep:
+            # Live steps carry NO synthetic frame — a real run gets a real figure (streamed below as
+            # its own "render" step) or nothing at all. We never draw a fake window over a real run.
             s = ScienceStep(
-                index=len(steps) + 1,
-                action=action,
-                detail=detail,
-                screenshot=_frame_svg(badge, detail, subtle=subtle),
+                index=len(steps) + 1, action=action, detail=detail, screenshot=screenshot
             )
             steps.append(s)
             return s
 
-        yield step("connect", "Signed in to the local Claude Science daemon", "Sign in")
+        yield step("connect", "Signed in to the local Claude Science daemon")
 
         project_id = await _pick_project(client, settings)
         frame_id = await _create_run(client, url, project_id, task, settings)
-        yield step("submit", "Dispatched the task to the coordinating agent", "Dispatch")
+        yield step("submit", "Dispatched the task to the coordinating agent")
 
         last_desc: str | None = None
         resolved: set[str] = set()
@@ -248,39 +337,40 @@ async def _run_api(
                         "gate",
                         "Claude Science asked how to proceed — letting it continue with its "
                         "recommended approach",
-                        "Question",
-                        subtle=True,
                     )
                 if res.allowed:
-                    yield step(
-                        "gate",
-                        f"Approved {res.allowed} on-host code-execution step(s)",
-                        "Execute",
-                        subtle=True,
-                    )
+                    yield step("gate", f"Approved {res.allowed} on-host code-execution step(s)")
                 if res.denied:
                     yield step(
                         "gate",
                         f"Declined {res.denied} external request(s) — kept the run on localhost",
-                        "Gate",
-                        subtle=True,
                     )
 
             desc = str(frame.get("status_description") or "").strip()
             if desc and desc != last_desc:
                 last_desc = desc
-                yield step("work", desc, _badge(desc))
+                yield step("work", desc)
+
+            # Preview each real figure the moment the run saves it (the daemon's artifact API), so
+            # the panel shows genuine output — the actual visual output from Claude Science. Falls
+            # back to any image inlined in the frame (older daemons).
+            for fig in await _new_artifact_figures(client, frame_id, seen_art_ids):
+                yield step("render", f"Rendered {fig.title}", screenshot=fig.image)
+            for fig in _new_inline_figures(frame, seen_inline):
+                yield step("render", f"Rendered {fig.title}", screenshot=fig.image)
 
             if status in _TERMINAL_OK or status in _TERMINAL_BAD:
                 break
             if elapsed >= timeout_s:
-                yield _timeout_session(task, url, settings, frame, steps)
+                figures, files = await _collect_artifacts(client, frame)
+                yield _timeout_session(task, url, settings, frame, steps, figures, files)
                 return
 
             await asyncio.sleep(poll)
             elapsed += poll
 
-        yield _api_session(task, url, settings, frame, steps)
+        figures, files = await _collect_artifacts(client, frame)
+        yield _api_session(task, url, settings, frame, steps, figures, files)
 
 
 async def _authenticate(client: httpx.AsyncClient, settings: Settings) -> None:
@@ -496,7 +586,13 @@ def _badge(desc: str) -> str:
 
 
 def _api_session(
-    task: str, url: str, settings: Settings, frame: dict[str, Any], steps: list[ScienceStep]
+    task: str,
+    url: str,
+    settings: Settings,
+    frame: dict[str, Any],
+    steps: list[ScienceStep],
+    figures: list[ScienceFigure],
+    files: list[ScienceFile],
 ) -> ScienceSession:
     """Build the terminal session from a finished frame — completed only if the run actually
     completed; otherwise a labelled error (never a fabricated success)."""
@@ -523,12 +619,20 @@ def _api_session(
         result_title=_result_title(str(frame.get("name") or "").strip() or task),
         result_summary=summary,
         metrics=_api_metrics(frame),
+        figures=figures,
+        files=files,
         note=note,
     )
 
 
 def _timeout_session(
-    task: str, url: str, settings: Settings, frame: dict[str, Any], steps: list[ScienceStep]
+    task: str,
+    url: str,
+    settings: Settings,
+    frame: dict[str, Any],
+    steps: list[ScienceStep],
+    figures: list[ScienceFigure],
+    files: list[ScienceFile],
 ) -> ScienceSession:
     """We stopped waiting but the run continues server-side — say so honestly, not 'completed'."""
     desc = str(frame.get("status_description") or "").strip()
@@ -541,6 +645,8 @@ def _timeout_session(
         result_title=_result_title(task),
         result_summary=(desc or "Claude Science is still working on the run."),
         metrics=_api_metrics(frame),
+        figures=figures,
+        files=files,
         note=(
             "Claymore stopped waiting before Claude Science finished — the run is still going in "
             "the app. Open Claude Science to see the final result."
@@ -588,6 +694,422 @@ def _ktok(n: Any) -> str:
     if n >= 1000:
         return f"{n / 1000:.1f}k"
     return str(n)
+
+
+# --- real figures: extract genuine visual output from a live run frame -------------------------
+#
+# Claude Science produces plots / charts / structure renders during a run. Its frame JSON carries
+# them, but we don't know the exact schema, so we detect image-shaped values wherever they sit
+# (Anthropic image content blocks, raw data: URLs, image-mimed artifact dicts, image-file refs) and
+# normalize each to a self-contained data: URL. Anything referenced by a loopback URL is fetched
+# through the same containment-locked client; a non-loopback ref is never fetched. If a frame has no
+# images we surface none — we never fabricate a figure (CLAUDE.md hard rule 1).
+
+
+class _RawFigure(BaseModel):
+    """A figure candidate found while walking a frame: either a ready ``data_url`` or a ``fetch``
+    reference (a loopback URL/path) to resolve, plus any title/caption from nearby keys."""
+
+    data_url: str | None = None
+    fetch: str | None = None
+    title: str | None = None
+    caption: str | None = None
+
+
+def _first_str(obj: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    """First non-empty string value among ``keys`` (used to lift a figure's title/caption)."""
+    for key in keys:
+        val = obj.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def _looks_like_image_ref(value: str) -> bool:
+    """True for a string that references an image: a ``data:image/`` URL or a path/URL whose (query-
+    stripped) name ends in an image extension."""
+    v = value.strip()
+    if v.startswith("data:image/"):
+        return True
+    stem = v.split("?", 1)[0].split("#", 1)[0].lower()
+    return stem.endswith(_IMAGE_EXTS)
+
+
+def _image_block_figure(block: dict[str, Any], title: str | None) -> _RawFigure | None:
+    """An Anthropic-style image content block: ``{"type":"image","source":{...}}``. base64 source →
+    inline data URL; url source → a fetch ref (resolved later, loopback-gated). Other sources (e.g.
+    a Files-API ``file_id`` whose endpoint we can't assume) are skipped rather than guessed at."""
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    stype = str(source.get("type") or "").lower()
+    caption = _first_str(block, ("caption", "alt", "description"))
+    if stype == "base64":
+        media = str(source.get("media_type") or "").lower()
+        data = source.get("data")
+        if media.startswith("image/") and isinstance(data, str) and data:
+            return _RawFigure(data_url=f"data:{media};base64,{data}", title=title, caption=caption)
+        return None
+    if stype in ("url", "uri"):
+        ref = source.get("url") or source.get("uri")
+        if isinstance(ref, str) and ref:
+            return _RawFigure(fetch=ref, title=title, caption=caption)
+    return None
+
+
+def _artifact_figure(obj: dict[str, Any], media: str, title: str | None) -> _RawFigure | None:
+    """An artifact/file dict whose media type is an image: take an inline base64 payload if present,
+    else a loopback URL/path to fetch."""
+    caption = _first_str(obj, ("caption", "alt", "description"))
+    for key in ("data", "base64", "b64", "b64_json", "content"):
+        payload = obj.get(key)
+        if not isinstance(payload, str) or not payload:
+            continue
+        if payload.startswith("data:"):
+            return _RawFigure(data_url=payload, title=title, caption=caption)
+        # A raw base64 blob paired with an image media type -> a data URL.
+        return _RawFigure(data_url=f"data:{media};base64,{payload}", title=title, caption=caption)
+    ref = _first_str(obj, ("url", "uri", "src", "href", "path", "file_path", "download_url"))
+    if ref:
+        return _RawFigure(fetch=ref, title=title, caption=caption)
+    return None
+
+
+def _walk_figures(
+    obj: Any, out: list[_RawFigure], budget: list[int], depth: int, title: str | None
+) -> None:
+    """Recursively collect figure candidates from a frame (its messages, content blocks, children,
+    output_data — wherever they nest). Bounded in depth, node count, AND output size so a huge or
+    hostile frame (e.g. one wide dict of a million image strings) can't exhaust memory or hang: the
+    budget is spent per node visited and every append site checks the caps. Pure I/O-free: refs
+    resolve later."""
+    if depth > _WALK_MAX_DEPTH or _walk_exhausted(out, budget):
+        return
+    budget[0] -= 1
+    if isinstance(obj, str):
+        if obj.startswith("data:image/"):
+            out.append(_RawFigure(data_url=obj, title=title))
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            if _walk_exhausted(out, budget):
+                return
+            budget[0] -= 1
+            _walk_figures(item, out, budget, depth + 1, title)
+        return
+    if not isinstance(obj, dict):
+        return
+
+    local_title = _first_str(obj, ("title", "name", "label", "filename", "caption", "alt")) or title
+
+    # (1) An explicit image content block.
+    if str(obj.get("type") or "").lower() == "image":
+        fig = _image_block_figure(obj, local_title)
+        if fig is not None:
+            out.append(fig)
+            return  # don't also recurse into its source and double-count
+
+    # (2) An artifact/file dict with an image media type.
+    media = _first_str(obj, ("media_type", "mime", "mime_type", "content_type", "contentType"))
+    if media and media.lower().startswith("image/"):
+        fig = _artifact_figure(obj, media.lower(), local_title)
+        if fig is not None:
+            out.append(fig)
+            return
+
+    # (3) A string value under an image-ish key (a data: URL or an image file ref).
+    for key in _IMAGE_REF_KEYS:
+        if _walk_exhausted(out, budget):
+            return
+        val = obj.get(key)
+        if isinstance(val, str) and _looks_like_image_ref(val):
+            if val.startswith("data:image/"):
+                out.append(_RawFigure(data_url=val, title=local_title))
+            else:
+                out.append(_RawFigure(fetch=val, title=local_title))
+
+    # (4) Recurse into nested structure. A bare ``data:image/`` string is unambiguously an image,
+    # so capture it under any key (a plain filename under a non-image key stays ambiguous → skip).
+    # The budget is spent per key so a single very wide dict can't append past the caps.
+    for key, value in obj.items():
+        if _walk_exhausted(out, budget):
+            return
+        budget[0] -= 1
+        if isinstance(value, str):
+            if value.startswith("data:image/") and key not in _IMAGE_REF_KEYS:
+                out.append(_RawFigure(data_url=value, title=local_title))
+        elif isinstance(value, (dict, list)):
+            _walk_figures(value, out, budget, depth + 1, local_title)
+
+
+def _walk_exhausted(out: list[_RawFigure], budget: list[int]) -> bool:
+    """True once the walk has spent its node budget or collected enough raw candidates — the single
+    place both hard bounds are enforced, checked at every append/recurse site."""
+    return budget[0] <= 0 or len(out) >= _MAX_FIGURES * 4
+
+
+def _valid_image_data_url(data_url: str) -> str | None:
+    """Return ``data_url`` if it is a well-formed image data URL of an allowed type and within the
+    size cap; else ``None``. This is the last gate before a figure reaches the client."""
+    if not data_url.startswith("data:"):
+        return None
+    try:
+        header, payload = data_url[5:].split(",", 1)
+    except ValueError:
+        return None
+    media = header.split(";", 1)[0].strip().lower()
+    if media not in _ALLOWED_IMAGE_MEDIA:
+        return None
+    is_b64 = ";base64" in header.lower()
+    if is_b64:
+        # Decoded size ≈ 3/4 of the base64 length; validate it actually decodes.
+        if (len(payload) * 3) // 4 > _MAX_FIGURE_BYTES:
+            return None
+        try:
+            base64.b64decode(payload, validate=True)
+        except (ValueError, binascii.Error):
+            return None
+    elif len(payload) > _MAX_FIGURE_BYTES:
+        return None
+    return data_url
+
+
+def _fig_key(data_url: str) -> str:
+    """A dedup key for a figure — a content hash of the whole data URL. A prefix would false-merge
+    two distinct images that share a header (same dimensions/top rows); a full digest won't, and it
+    stays stable across polls."""
+    return hashlib.sha256(data_url.encode("utf-8", "ignore")).hexdigest()
+
+
+def _inline_figures(frame: dict[str, Any]) -> list[ScienceFigure]:
+    """The frame's figures that are already inline data URLs — no I/O, so it's safe to call on every
+    poll to animate real output as it lands."""
+    raws: list[_RawFigure] = []
+    _walk_figures(frame, raws, [_WALK_MAX_NODES], 0, None)
+    figures: list[ScienceFigure] = []
+    seen: set[str] = set()
+    for raw in raws:
+        if raw.data_url is None:
+            continue
+        valid = _valid_image_data_url(raw.data_url)
+        if not valid:
+            continue
+        key = _fig_key(valid)
+        if key in seen:
+            continue
+        seen.add(key)
+        figures.append(_science_figure(valid, raw, len(figures)))
+        if len(figures) >= _MAX_FIGURES:
+            break
+    return figures
+
+
+def _new_inline_figures(frame: dict[str, Any], seen: set[str]) -> list[ScienceFigure]:
+    """Inline figures in ``frame`` not yet streamed (mutates ``seen``). Powers the live 'render'
+    steps so the panel shows real figures the moment they appear."""
+    fresh: list[ScienceFigure] = []
+    for fig in _inline_figures(frame):
+        key = _fig_key(fig.image)
+        if key in seen:
+            continue
+        seen.add(key)
+        fresh.append(fig)
+    return fresh
+
+
+def _science_figure(image: str, raw: _RawFigure, index: int) -> ScienceFigure:
+    """Normalize a validated data URL + its raw metadata into a titled figure."""
+    title = _clip(raw.title, 80) if raw.title else f"Figure {index + 1}"
+    caption = _clip(raw.caption, 160) if raw.caption else None
+    return ScienceFigure(title=title, image=image, caption=caption)
+
+
+# --- real figures/files: the daemon's artifact API (authoritative) -----------------------------
+
+
+def _artifact_frame_ids(frame: dict[str, Any]) -> list[str]:
+    """The frame ids to enumerate artifacts from: the root frame plus its child (sub-agent) frames —
+    a figure may be saved by any agent in the run tree."""
+    ids: list[str] = []
+    root = frame.get("id")
+    if isinstance(root, str) and root:
+        ids.append(root)
+    for child in frame.get("children") or []:
+        if isinstance(child, dict) and isinstance(child.get("id"), str) and child["id"]:
+            ids.append(child["id"])
+        elif isinstance(child, str) and child:
+            ids.append(child)
+    seen: set[str] = set()
+    out: list[str] = []
+    for fid in ids:
+        if fid not in seen:
+            seen.add(fid)
+            out.append(fid)
+    return out[: 1 + _MAX_CHILD_FRAMES]
+
+
+async def _get_capped(
+    client: httpx.AsyncClient, path: str, max_bytes: int
+) -> tuple[bytes, str] | None:
+    """GET ``path`` on the containment-locked client, streaming the body and ABORTING once it
+    exceeds ``max_bytes`` — so a daemon that under-reports a size (or serves a multi-GB body) can't
+    exhaust memory. Enforces the cap *during* the download, not after. Any failure returns ``None``.
+    The ``_guard_loopback`` request hook still fires, so this can only ever hit the local daemon."""
+    try:
+        async with client.stream("GET", path) as resp:
+            if resp.status_code != 200:
+                return None
+            content_type = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            buf = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    return None  # over the cap — stop reading, discard
+            return bytes(buf), content_type
+    except Exception:
+        return None
+
+
+async def _list_frame_artifacts(client: httpx.AsyncClient, frame_id: str) -> list[dict[str, Any]]:
+    """The artifacts a frame produced: ``[{id, filename, content_type, size_bytes, ...}]``. The body
+    is size-capped and the record count is bounded. Best-effort — any failure yields an empty list
+    rather than raising into the run."""
+    got = await _get_capped(client, _FRAME_ARTIFACTS_EP.format(frame_id=frame_id), _MAX_LIST_BYTES)
+    if got is None:
+        return []
+    body, _content_type = got
+    try:
+        data = json.loads(body)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [a for a in data if isinstance(a, dict)][:_MAX_ARTIFACT_RECORDS]
+
+
+async def _fetch_artifact(client: httpx.AsyncClient, artifact_id: str) -> tuple[bytes, str] | None:
+    """Download one artifact's bytes + its content-type, capped at ``_MAX_FIGURE_BYTES`` (the larger
+    of the figure/file caps) and enforced during the stream so an oversized body can't OOM us."""
+    return await _get_capped(
+        client, _ARTIFACT_EP.format(artifact_id=artifact_id), _MAX_FIGURE_BYTES
+    )
+
+
+async def _figure_from_artifact(
+    client: httpx.AsyncClient, artifact_id: str, name: str
+) -> ScienceFigure | None:
+    """Download an image artifact and turn it into a rendered figure (data URL, size-capped)."""
+    got = await _fetch_artifact(client, artifact_id)
+    if got is None:
+        return None
+    content, content_type = got
+    if not content_type.startswith("image/") or not content or len(content) > _MAX_FIGURE_BYTES:
+        return None
+    b64 = base64.b64encode(content).decode("ascii")
+    data_url = _valid_image_data_url(f"data:{content_type};base64,{b64}")
+    if data_url is None:
+        return None
+    return ScienceFigure(title=_clip(name, 80) or "Figure", image=data_url, caption=None)
+
+
+async def _file_from_artifact(
+    client: httpx.AsyncClient, artifact_id: str, name: str, content_type: str, size: int
+) -> ScienceFile:
+    """A non-image artifact as a downloadable file: inline it as a data URL when small enough, else
+    surface just its name/size (the UI shows it without an embedded payload)."""
+    download: str | None = None
+    if 0 < size <= _MAX_FILE_BYTES:
+        got = await _fetch_artifact(client, artifact_id)
+        if got is not None:
+            content, _real_ct = got
+            if content and len(content) <= _MAX_FILE_BYTES:
+                # The artifact bytes are untrusted (agent-generated). Label the download
+                # ``octet-stream`` so a browser always SAVES it and never renders it inline — a
+                # ``text/html`` / ``image/svg+xml`` artifact can't execute from an <a download>.
+                b64 = base64.b64encode(content).decode("ascii")
+                download = f"data:application/octet-stream;base64,{b64}"
+    return ScienceFile(
+        name=_clip(name, 80) or "artifact",
+        content_type=content_type or "application/octet-stream",
+        size_bytes=size,
+        download=download,
+    )
+
+
+def _int_size(raw: Any) -> int:
+    """A safe non-negative int for a daemon-reported ``size_bytes``. JSON permits ``NaN`` /
+    ``Infinity`` (``json.loads`` parses them) and ``int(nan)`` raises — so admit only finite, real
+    numbers; the ``bool`` special-case avoids ``True``→1. Anything else → 0."""
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return max(0, raw)
+    if isinstance(raw, float) and math.isfinite(raw):
+        return max(0, int(raw))
+    return 0
+
+
+async def _new_artifact_figures(
+    client: httpx.AsyncClient, frame_id: str, seen: set[str]
+) -> list[ScienceFigure]:
+    """Image artifacts on ``frame_id`` not yet streamed (mutates ``seen`` by artifact id). Powers
+    the live 'render' steps so a figure previews the moment the run saves it. Bounded by
+    ``_MAX_FIGURES`` total streamed so a frame reporting many artifacts can't flood the stream."""
+    fresh: list[ScienceFigure] = []
+    for art in await _list_frame_artifacts(client, frame_id):
+        if len(seen) >= _MAX_FIGURES:
+            break
+        aid = str(art.get("id") or "")
+        content_type = str(art.get("content_type") or "").lower()
+        if not aid or aid in seen or not content_type.startswith("image/"):
+            continue
+        fig = await _figure_from_artifact(client, aid, str(art.get("filename") or "figure"))
+        if fig is not None:
+            seen.add(aid)
+            fresh.append(fig)
+    return fresh
+
+
+async def _collect_artifacts(
+    client: httpx.AsyncClient, frame: dict[str, Any]
+) -> tuple[list[ScienceFigure], list[ScienceFile]]:
+    """The authoritative figures + files for the terminal session, from the daemon's artifact API
+    (root frame + sub-agent frames). Falls back to the inline-frame walker for any image the API
+    didn't surface (older daemons / inline shapes). Best-effort: failures just yield fewer items."""
+    figures: list[ScienceFigure] = []
+    files: list[ScienceFile] = []
+    fig_ids: set[str] = set()
+    file_ids: set[str] = set()
+    for fid in _artifact_frame_ids(frame):
+        for art in await _list_frame_artifacts(client, fid):
+            aid = str(art.get("id") or "")
+            if not aid:
+                continue
+            content_type = str(art.get("content_type") or "").lower()
+            name = str(art.get("filename") or "artifact")
+            size = _int_size(art.get("size_bytes"))
+            if content_type.startswith("image/"):
+                if aid in fig_ids or len(figures) >= _MAX_FIGURES:
+                    continue
+                fig = await _figure_from_artifact(client, aid, name)
+                if fig is not None:
+                    fig_ids.add(aid)
+                    figures.append(fig)
+            elif aid not in file_ids and len(files) < _MAX_FILES:
+                file_ids.add(aid)
+                files.append(await _file_from_artifact(client, aid, name, content_type, size))
+
+    # Fallback: any image inlined in the frame that the artifact API didn't surface.
+    if len(figures) < _MAX_FIGURES:
+        have = {_fig_key(f.image) for f in figures}
+        for fig in _inline_figures(frame):
+            if len(figures) >= _MAX_FIGURES:
+                break
+            key = _fig_key(fig.image)
+            if key not in have:
+                have.add(key)
+                figures.append(fig)
+    return figures, files
 
 
 # --- simulated: a deterministic, self-contained preview of a Claude Science run ----------------

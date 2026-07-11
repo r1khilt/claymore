@@ -12,7 +12,6 @@ import claymore.agent.sdk_loop as sdk_loop
 import claymore.api.routes.agent as agent_route
 from claymore.agent import RequestContext
 from claymore.agent.agent_loop import (
-    AnalysisEvent,
     AnswerEvent,
     DoneEvent,
     ScienceSessionEvent,
@@ -192,19 +191,19 @@ def test_safe_tool_surface_includes_claude_science_but_excludes_ingest() -> None
     specs = sdk_loop._safe_tool_specs()
     names = tuple(spec.name for spec in specs)
 
+    # The old simulated-analysis tools (run_bio_analysis, run_ml_analysis) are unregistered — real
+    # Claude Science (run_claude_science) is the single analysis path now.
     assert names == (
         "search_memory",
         "generate_opentrons_protocol",
-        "run_bio_analysis",
         "simulate_protocol",
-        "run_ml_analysis",
         "run_claude_science",
     )
     # Ingest stays gated to the connector surface; Claude Science is now an allowed tool (it drives
     # the loopback-locked local app, so it cannot reach off-host).
     assert "ingest_source" not in names
     assert "run_claude_science" in names
-    assert "SIMULATED" in next(s.description for s in specs if s.name == "run_bio_analysis")
+    assert "run_bio_analysis" not in names and "run_ml_analysis" not in names
     for spec in specs:
         assert spec.input_schema["additionalProperties"] is False
         properties = cast("dict[str, object]", spec.input_schema["properties"])
@@ -318,38 +317,6 @@ async def test_sdk_loop_preserves_events_usage_and_provenance(
     assert done.iterations == 2
     assert done.tool_calls == 1
     assert done.tool_counts == {"search_memory": 1}
-
-
-async def test_simulated_bio_result_is_labelled_in_every_ui_event(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(sdk_loop, "_load_sdk", _bindings)
-    monkeypatch.setattr(_FakeClient, "tool_name", "run_bio_analysis")
-    monkeypatch.setattr(
-        _FakeClient,
-        "tool_args",
-        {"kind": "structure_prediction", "target": "CBX2"},
-    )
-    _FakeClient.last_tool_result = None
-
-    events = [
-        event
-        async for event in sdk_loop.run_sdk_agent(
-            CTX,
-            "Preview a structure prediction",
-            InMemoryMemoryStore(),
-            make_settings(anthropic_api_key="sk-test"),
-        )
-    ]
-
-    analysis = next(event for event in events if isinstance(event, AnalysisEvent))
-    assert analysis.analysis.title.startswith("Simulated preview ·")
-    assert "no scientific compute ran" in analysis.analysis.summary
-    tool_end = next(event for event in events if isinstance(event, ToolEndEvent))
-    assert tool_end.summary.startswith("Simulated preview ·")
-    assert _FakeClient.last_tool_result is not None
-    observation = cast("list[dict[str, str]]", _FakeClient.last_tool_result["content"])[0]["text"]
-    assert "simulated result" in observation
 
 
 async def test_claude_science_streams_steps_and_result_through_sdk(

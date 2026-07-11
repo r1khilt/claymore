@@ -50,8 +50,25 @@ export interface ScienceStep {
   index: number
   action: string
   detail: string
-  /** self-contained data: URL — a PNG frame (live) or an SVG frame (preview). */
+  /** self-contained data: URL — a real figure the run produced (live) or an SVG frame (preview). */
   screenshot?: string | null
+}
+
+/** One real visual artifact a run produced (mirrors execute/claude_science.py ScienceFigure).
+ *  `image` is a self-contained data: URL rendered in a sandboxed <img> (untrusted agent output). */
+export interface ScienceFigure {
+  title: string
+  image: string
+  caption?: string | null
+}
+
+/** A non-image artifact a run produced (mirrors execute/claude_science.py ScienceFile).
+ *  `download` is a self-contained data: URL when the file was small enough to inline, else null. */
+export interface ScienceFile {
+  name: string
+  contentType: string
+  sizeBytes: number
+  download?: string | null
 }
 
 /** A recorded Claude Science run: the result card + the replayable steps behind the panel. */
@@ -64,6 +81,10 @@ export interface ScienceSession {
   resultTitle: string
   resultSummary: string
   metrics: { label: string; value: string }[]
+  /** The run's real visual output (graphs/charts/structures); empty on a preview. */
+  figures?: ScienceFigure[]
+  /** The run's other saved artifacts (datasets, etc.), offered as downloads; empty on a preview. */
+  files?: ScienceFile[]
   note?: string | null
 }
 
@@ -275,6 +296,32 @@ function scienceSteps(f: ScienceFlavor): ScienceStep[] {
     detail,
     screenshot: scienceFrame(badge, detail, subtle),
   }))
+}
+
+/** Illustrative figures for the mock's Claude Science gallery — the same self-contained SVG charts
+ *  the ML card uses, as data: URLs, so the "visual output" panel is demoable without a daemon. On a
+ *  live run these are replaced by the run's real figures (execute/claude_science.py `_collect_figures`). */
+function scienceFigures(q: string, rand: () => number): ScienceFigure[] {
+  const url = (svg: string) => `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+  if (/fold|structure|alphafold|openfold|pldd/.test(q))
+    return [
+      { title: 'Per-residue pLDDT', image: url(lossChart(rand)), caption: 'Confidence across the chain' },
+      { title: 'Predicted contact map', image: url(scatterChart(1.2, rand, 'residue i', 'residue j')) },
+    ]
+  if (/dock|bind|compound|ligand|inhibitor|chembl/.test(q))
+    return [
+      { title: 'Binding-affinity distribution', image: url(lossChart(rand)), caption: 'Docked fragment library' },
+      { title: 'Affinity vs. ligand size', image: url(scatterChart(-1.1, rand, 'heavy atoms', 'ΔG (kcal/mol)')) },
+    ]
+  if (/variant|pathogen|mutation|clinvar|snp/.test(q))
+    return [
+      { title: 'Variant-effect ROC', image: url(rocChart(0.86, rand)), caption: 'vs. ClinVar labels' },
+      { title: 'Effect score by position', image: url(scatterChart(0.9, rand, 'residue', 'effect score')) },
+    ]
+  return [
+    { title: 'Training loss', image: url(lossChart(rand)) },
+    { title: 'ROC curve', image: url(rocChart(0.82, rand)) },
+  ]
 }
 
 // A seeded PRNG so mock charts look real yet render identically across reloads (no Math.random).
@@ -604,6 +651,16 @@ export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerat
     yield { type: 'toolStart', id: cs, tool: 'run_claude_science', label: 'Using Claude Science' }
     const flavor = scienceFlavor(q)
     const steps = scienceSteps(flavor)
+    const figures = scienceFigures(q, seededRng(q))
+    const csv = 'x,y\n0,1.0\n1,0.8\n2,0.6\n3,0.5\n'
+    const files: ScienceFile[] = [
+      {
+        name: 'dataset_SIMULATED.csv',
+        contentType: 'text/csv',
+        sizeBytes: csv.length,
+        download: `data:text/csv;base64,${btoa(csv)}`,
+      },
+    ]
     for (const step of steps) {
       await sleep(650)
       yield { type: 'scienceStep', id: cs, step }
@@ -617,6 +674,8 @@ export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerat
       resultTitle: `Claude Science · ${q.slice(0, 48) || 'analysis'}`,
       resultSummary: flavor.summary,
       metrics: flavor.metrics,
+      figures,
+      files,
       note: 'Simulated preview — start the Claude Science app on localhost:8765 and Claymore drives it for real.',
     }
     yield { type: 'toolEnd', id: cs, ok: true, summary: session.resultTitle }

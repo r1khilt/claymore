@@ -64,25 +64,22 @@ _MCP_SERVER_NAME = "claymore"
 
 # Order is stable so tool prompts and tests do not churn.  These are the only model-callable
 # operations in the Agent SDK runtime.  In particular: no ingest_source (still gated to the
-# connector/sync surface).  run_claude_science IS allowed here — it drives the real local Claude
-# Science app, which is hard-pinned to loopback in execute/claude_science.py, so the blast radius is
-# one local daemon; Claude Science runs any code inside its own sandbox.
+# connector/sync surface).  The old simulated-analysis tools (run_bio_analysis, run_ml_analysis) are
+# intentionally NOT here: real Claude Science (run_claude_science) is now the single analysis path —
+# it drives the real local Claude Science app, hard-pinned to loopback in execute/claude_science.py,
+# so the blast radius is one local daemon; Claude Science runs any code inside its own sandbox.
 SAFE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "search_memory",
         "generate_opentrons_protocol",
-        "run_bio_analysis",
         "simulate_protocol",
-        "run_ml_analysis",
         "run_claude_science",
     }
 )
 _SAFE_TOOL_ORDER = (
     "search_memory",
     "generate_opentrons_protocol",
-    "run_bio_analysis",
     "simulate_protocol",
-    "run_ml_analysis",
     "run_claude_science",
 )
 
@@ -90,16 +87,14 @@ _SAFE_SYSTEM_SUFFIX = """
 
 ACTIVE CAPABILITY BOUNDARY FOR THIS SESSION:
 - The tool list supplied with this session is authoritative. You can search scoped lab memory,
-  design and simulate a protocol, run a read-only ML analysis, or generate a deterministic
-  SIMULATED bio-analysis preview.
+  design and simulate a protocol, or run a scientific analysis in Claude Science.
 - Source ingestion/synchronization is unavailable in this Composer runtime. Do not imply it ran;
   direct the user to the connector/sync surface.
 - run_claude_science drives the REAL local Claude Science app (loopback-only) and streams its steps.
-  Use it for heavier genomics/proteomics/structural-biology/cheminformatics work, or whenever the
-  user asks for Claude Science or "the workbench". If the app isn't reachable it returns a clearly
-  labelled preview — never present a preview as a real result.
-- run_bio_analysis is a deterministic simulated preview, not a scientific computation or real
-  result. Label it as simulated every time you discuss it.
+  It is the ONLY analysis path: use it for any data analysis, hypothesis test, regression, plot, or
+  genomics/proteomics/structural-biology/cheminformatics work, and whenever the user asks for Claude
+  Science or "the workbench". If the app isn't reachable it returns a clearly labelled preview —
+  never present a preview as a real result. Do NOT fabricate an analysis or a dataset.
 """
 
 

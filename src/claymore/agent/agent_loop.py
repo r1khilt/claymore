@@ -58,7 +58,13 @@ from claymore.agent.hardware import (
 from claymore.agent.tools import facts_to_citations, search_memory
 from claymore.auth.models import User
 from claymore.config import Settings
-from claymore.execute.claude_science import ScienceSession, ScienceStep, run_science_session
+from claymore.execute.claude_science import (
+    ScienceFigure,
+    ScienceFile,
+    ScienceSession,
+    ScienceStep,
+    run_science_session,
+)
 from claymore.execute.datasets import ResolvedDataset, resolve_datasets
 from claymore.execute.ml_analysis import InvalidColumn, MLRecipe, MLResult, run_analysis
 from claymore.logging import get_logger
@@ -125,15 +131,14 @@ _SYSTEM_PROMPT = (
     "a GENERAL lab-robot run that preps on-deck and hands the plate to that instrument, with a "
     "PyLabRobot movement script. Say clearly which part is off-deck; never pretend Opentrons did "
     "it, and never claim anything actually ran.\n"
-    "5. For an ML analysis, the dataset MUST be one the lab actually referenced in memory — the "
-    "tool resolves it and cites who mentioned it. Never fabricate a dataset or a result. The "
-    "tool reports a verdict (supported / refuted / inconclusive) computed from the metrics; report "
-    "that verdict honestly, including when the data refutes the hypothesis or is inconclusive.\n\n"
+    "5. For ANY scientific analysis — a data/hypothesis test, regression or correlation, a plot, "
+    "docking, folding, variant scoring, or a pipeline — use run_claude_science. It is the only "
+    "analysis path: Claymore drives the real Claude Science app and streams what it does, then "
+    "returns the result plus the real figures it produced. Never fabricate a dataset or a result. "
+    "A simulated preview (app unreachable) is not a real result; if a run comes back simulated, "
+    "say so plainly.\n\n"
     "When you have enough to answer, give a concise, grounded answer. Use a tool only when it "
-    "moves the task forward. For a quick single computation use run_bio_analysis; for heavier or "
-    "multi-tool science (structural biology, genomics, cheminformatics) or when the user asks for "
-    "Claude Science or the workbench, use run_claude_science — Claymore drives the app and streams "
-    "what it does. A simulated preview is not a real result; if a run comes back simulated, say so."
+    "moves the task forward."
 )
 
 
@@ -371,10 +376,35 @@ class ScienceStepOut(_CamelModel):
     screenshot: str | None = None
 
 
+class ScienceFigureOut(_CamelModel):
+    """One real visual artifact from a Claude Science run (the ``figures`` gallery). ``image`` is a
+    self-contained ``data:`` URL the client renders in a sandboxed ``<img>`` — never inlined, since
+    it is untrusted agent output (mirrors ``execute.claude_science.ScienceFigure``)."""
+
+    title: str
+    image: str
+    caption: str | None = None
+
+
+class ScienceFileOut(_CamelModel):
+    """A non-image artifact from a Claude Science run, offered as a download (mirrors
+    ``execute.claude_science.ScienceFile``). ``download`` is a ``data:`` URL when the file was small
+    enough to inline, else ``None`` (the UI then just names it)."""
+
+    name: str
+    content_type: str
+    size_bytes: int
+    download: str | None = None
+
+
 class ScienceSessionOut(_CamelModel):
     """A recorded Claude Science run surfaced to the web client: the result card + the replayable
     steps that power the collapsible "watch Claymore work" panel. ``status`` distinguishes a real
-    drive (``completed``) from a simulated preview so the UI never implies a fake run is real."""
+    drive (``completed``) from a simulated preview so the UI never implies a fake run is real.
+
+    ``figures`` are the run's real visual output (graphs/charts/structures), rendered as a gallery,
+    and ``files`` its other saved artifacts (datasets, etc.) offered as downloads; both populated on
+    a live run, empty on a preview."""
 
     task: str
     status: str
@@ -384,6 +414,8 @@ class ScienceSessionOut(_CamelModel):
     result_title: str
     result_summary: str
     metrics: list[Metric]
+    figures: list[ScienceFigureOut] = []
+    files: list[ScienceFileOut] = []
     note: str | None = None
 
 
@@ -538,39 +570,19 @@ def _tool_specs() -> list[ToolParam]:
             ),
         },
         {
-            "name": "run_bio_analysis",
-            "description": (
-                "Run a computational biology analysis (e.g. docking a compound against a protein, "
-                "a BLAST-style hit search) and return a result summary with metrics. Read-only "
-                "computation; returns numbers, does not act on them."
-            ),
-            "input_schema": _strict(
-                {
-                    "kind": {
-                        "type": "string",
-                        "description": "The analysis to run.",
-                        "enum": ["docking", "blast", "structure_prediction", "variant_effect"],
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "The protein / gene / compound the analysis is about.",
-                        "minLength": 1,
-                        "maxLength": 200,
-                    },
-                },
-                required=["kind", "target"],
-            ),
-        },
-        {
             "name": "run_claude_science",
             "description": (
-                "Run an analysis in the Claude Science workbench — Anthropic's multi-agent science "
-                "app (genomics, proteomics, structural biology, cheminformatics) with 60+ "
+                "Run a scientific analysis in the Claude Science workbench — Anthropic's "
+                "multi-agent science app (genomics, proteomics, structural biology, "
+                "cheminformatics) with 60+ "
                 "databases, BioNeMo models (Evo 2, Boltz-2, OpenFold3), and GPU compute. Claymore "
-                "drives the app for the user and streams what it does. Prefer "
-                "this over run_bio_analysis when the task is heavier, spans multiple tools or "
-                "databases, needs structural biology or genomics, or the user asks for Claude "
-                "Science or 'the workbench'. Returns a result plus a recorded session."
+                "drives the app for the user and streams what it does, then returns the result and "
+                "the real figures it produced. This is the ONE analysis tool: use it for ANY data "
+                "analysis, hypothesis test, regression/correlation, plotting, docking, folding, "
+                "variant scoring, or pipeline — and whenever the user asks for Claude Science or "
+                "'the workbench'. Returns a result plus a recorded session. If the app isn't "
+                "reachable it returns a clearly labelled preview; never present a preview as real, "
+                "and never fabricate a dataset or a result."
             ),
             "input_schema": _strict(
                 {
@@ -593,49 +605,6 @@ def _tool_specs() -> list[ToolParam]:
             ),
             "input_schema": _strict({}, required=[]),
         },
-        {
-            "name": "run_ml_analysis",
-            "description": (
-                "Test a hypothesis by training a model on a dataset the lab has DISCUSSED. The "
-                "tool searches memory for the dataset (it must be one the lab actually referenced; "
-                "it resolves and cites who mentioned it, and never fabricates data), trains a real "
-                "model, and returns a verdict (supported / refuted / inconclusive) computed from "
-                "held-out metrics, plus charts. Read-only computation. Use for questions like "
-                "'was our hypothesis that X predicts Y actually true?'. Pick the recipe: "
-                "'classification' (predict a yes/no label), 'regression' (predict a numeric "
-                "value), or 'correlation' (is one feature associated with the outcome)."
-            ),
-            "input_schema": _strict(
-                {
-                    "hypothesis": {
-                        "type": "string",
-                        "description": "The hypothesis to test, in plain language.",
-                        "minLength": 1,
-                        "maxLength": 500,
-                    },
-                    "dataset_hint": {
-                        "type": "string",
-                        "description": "What dataset to look for in memory (name/topic/keywords).",
-                        "minLength": 1,
-                        "maxLength": 200,
-                    },
-                    "recipe": {
-                        "type": "string",
-                        "description": "Which analysis to run.",
-                        "enum": ["classification", "regression", "correlation"],
-                    },
-                    "feature": {
-                        "type": "string",
-                        "description": (
-                            "Optional: restrict to one feature/predictor column by name. Omit to "
-                            "use all columns (correlation auto-picks the most associated one)."
-                        ),
-                        "maxLength": 100,
-                    },
-                },
-                required=["hypothesis", "dataset_hint", "recipe"],
-            ),
-        },
     ]
     return cast("list[ToolParam]", specs)
 
@@ -645,10 +614,8 @@ _TOOL_LABELS: dict[str, str] = {
     "search_memory": "Searching lab memory",
     "ingest_source": "Ingesting a source",
     "generate_opentrons_protocol": "Designing an Opentrons protocol",
-    "run_bio_analysis": "Running a bio analysis",
     "run_claude_science": "Using Claude Science",
     "simulate_protocol": "Simulating the protocol",
-    "run_ml_analysis": "Running an ML analysis in a sandbox",
 }
 
 
@@ -1065,6 +1032,21 @@ def _science_step_out(step: ScienceStep) -> ScienceStepOut:
     )
 
 
+def _science_figure_out(figure: ScienceFigure) -> ScienceFigureOut:
+    """Map a driver figure to the camelCase event payload the web client renders as a gallery."""
+    return ScienceFigureOut(title=figure.title, image=figure.image, caption=figure.caption)
+
+
+def _science_file_out(file: ScienceFile) -> ScienceFileOut:
+    """Map a driver file artifact to the camelCase payload the web client offers to download."""
+    return ScienceFileOut(
+        name=file.name,
+        content_type=file.content_type,
+        size_bytes=file.size_bytes,
+        download=file.download,
+    )
+
+
 def _science_outcome(session: ScienceSession | None, tool_id: str) -> _ToolOutcome:
     """Turn a finished Claude Science session into the tool outcome: the observation fed back to the
     model (honest about whether it was a real drive or a preview) plus the ``scienceSession`` event
@@ -1084,13 +1066,28 @@ def _science_outcome(session: ScienceSession | None, tool_id: str) -> _ToolOutco
         result_title=session.result_title,
         result_summary=session.result_summary,
         metrics=[Metric(label=m.label, value=m.value) for m in session.metrics],
+        figures=[_science_figure_out(f) for f in session.figures],
+        files=[_science_file_out(f) for f in session.files],
         note=session.note,
     )
     live = session.status == "completed"
     metric_str = ", ".join(f"{m.label}={m.value}" for m in session.metrics)
+    # Tell the model what the user can already SEE, so it never claims it "can't display" figures
+    # the gallery is already rendering.
+    shown: list[str] = []
+    if session.figures:
+        shown.append(f"{len(session.figures)} figure(s)")
+    if session.files:
+        shown.append(f"{len(session.files)} file(s)")
+    figure_note = (
+        f" It produced {' and '.join(shown)}, already displayed to the user in the chat "
+        "(rendered inline, with downloads) — do NOT say you cannot show or send them."
+        if shown
+        else ""
+    )
     observation = (
         f"Claude Science {'ran' if live else 'previewed'} '{session.task}'. "
-        f"{session.result_summary} Metrics: {metric_str}."
+        f"{session.result_summary} Metrics: {metric_str}.{figure_note}"
     )
     if not live:
         observation += (

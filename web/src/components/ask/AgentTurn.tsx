@@ -24,9 +24,18 @@ import {
   Timer,
   ScanEye,
   Image as ImageIcon,
+  FileText,
   type LucideIcon,
 } from 'lucide-react'
-import type { AgentEvent, AnalysisResult, ScienceSession, ScienceStep, ToolName } from '@/lib/agent'
+import type {
+  AgentEvent,
+  AnalysisResult,
+  ScienceFigure,
+  ScienceFile,
+  ScienceSession,
+  ScienceStep,
+  ToolName,
+} from '@/lib/agent'
 import type { Protocol } from '@/lib/protocol'
 import { cn } from '@/lib/utils'
 import { AnswerView } from './AnswerView'
@@ -255,8 +264,95 @@ function ScienceStepRow({ step, current }: { step: ScienceStep; current: boolean
   )
 }
 
-/** The Claude Science panel: a live "screenshot" of Claymore operating the app, the result once it
- *  finishes, and a collapsible dropdown to replay every step it took. Driven by the streamed
+/** A gallery of the run's real visual output — the graphs/charts/structure renders Claude Science
+ *  produced, extracted from the actual run frame (execute/claude_science.py). Each figure is an
+ *  untrusted `data:` URL, so it renders in a *sandboxed* `<img>` (scripts can't run, and it can't
+ *  phone home) — never inlined as HTML. */
+function ScienceFigureGallery({ figures }: { figures: ScienceFigure[] }) {
+  if (figures.length === 0) return null
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-muted">
+        <ImageIcon className="size-3" strokeWidth={2} />
+        Figures from the run · {figures.length}
+      </div>
+      <div className="grid gap-2.5 sm:grid-cols-2">
+        {figures.map((f, i) => (
+          <figure
+            key={i}
+            className="overflow-hidden rounded-xl bg-white/45 ring-1 ring-inset ring-black/[0.05]"
+          >
+            <img
+              src={f.image}
+              alt={f.title}
+              loading="lazy"
+              className="block max-h-72 w-full bg-white object-contain"
+            />
+            <figcaption className="border-t border-line/70 px-2.5 py-1.5">
+              <div className="truncate text-[12px] font-medium text-ink/85">{f.title}</div>
+              {f.caption && <div className="truncate text-[11px] text-faint">{f.caption}</div>}
+            </figcaption>
+          </figure>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function formatBytes(n: number): string {
+  if (!n) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** The run's non-image artifacts (datasets, etc.) as downloads. `download` is a self-contained
+ *  data: URL when the file was small enough to inline; otherwise we just name it. */
+function ScienceFileList({ files }: { files: ScienceFile[] }) {
+  if (files.length === 0) return null
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-muted">
+        <FileText className="size-3" strokeWidth={2} />
+        Files from the run · {files.length}
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {files.map((f, i) => {
+          const meta = [f.contentType, formatBytes(f.sizeBytes)].filter(Boolean).join(' · ')
+          const row = (
+            <>
+              <FileText className="size-3.5 shrink-0 text-sage-600" strokeWidth={2} />
+              <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink/85">{f.name}</span>
+              {meta && <span className="shrink-0 text-[11px] text-faint">{meta}</span>}
+              {f.download && <Download className="size-3.5 shrink-0 text-muted" strokeWidth={2} />}
+            </>
+          )
+          return f.download ? (
+            <a
+              key={i}
+              href={f.download}
+              download={f.name}
+              className="flex items-center gap-2 rounded-lg bg-white/50 px-2.5 py-1.5 ring-1 ring-inset ring-black/[0.05] transition-colors hover:bg-white/80"
+            >
+              {row}
+            </a>
+          ) : (
+            <div
+              key={i}
+              className="flex items-center gap-2 rounded-lg bg-white/40 px-2.5 py-1.5 ring-1 ring-inset ring-black/[0.05]"
+              title="Too large to embed — open the Claude Science session to download"
+            >
+              {row}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** The Claude Science panel: the run's latest real figure as it works, the result + a figure gallery
+ *  once it finishes, and a collapsible dropdown to replay every step it took. Driven by the streamed
  *  `scienceStep` events while running, then the final `scienceSession`. */
 function ScienceSessionCard({
   session,
@@ -270,8 +366,14 @@ function ScienceSessionCard({
   const [open, setOpen] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const steps = session?.steps.length ? session.steps : liveSteps
-  const latest = steps[steps.length - 1]
+  // Hero = the most recent step that actually produced a visual (a real figure in a live run, or the
+  // preview frame in a simulated run). Non-visual live steps carry no screenshot, so we never show a
+  // fake window over a real run.
+  const hero = [...steps].reverse().find((s) => s.screenshot)
+  const latestDetail = steps[steps.length - 1]?.detail
   const done = !!session
+  const figures = session?.figures ?? []
+  const files = session?.files ?? []
 
   useEffect(() => {
     if (open) listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
@@ -292,10 +394,10 @@ function ScienceSessionCard({
         <ScienceStatusBadge status={session?.status} running={running} />
       </div>
 
-      {latest?.screenshot && (
+      {hero?.screenshot && (
         <div className="mx-4 mt-3 overflow-hidden rounded-xl ring-1 ring-inset ring-black/[0.06]">
           <div className="relative">
-            <img src={latest.screenshot} alt="Claude Science" className="block w-full" />
+            <img src={hero.screenshot} alt="Claude Science figure" className="block w-full bg-white" />
             {running && !done && (
               <span className="absolute left-2 top-2 flex items-center gap-1.5 rounded-full bg-black/55 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur">
                 <span className="size-1.5 animate-pulse rounded-full bg-sage-300" />
@@ -303,12 +405,12 @@ function ScienceSessionCard({
               </span>
             )}
           </div>
-          {latest.detail && (
+          {latestDetail && (
             <div className="flex items-center gap-1.5 border-t border-line/70 bg-white/50 px-3 py-1.5 text-[12px] text-muted">
               {running && !done && (
                 <Loader2 className="size-3 shrink-0 animate-spin text-sage-500" strokeWidth={2.5} />
               )}
-              <span className="truncate">{latest.detail}</span>
+              <span className="truncate">{latestDetail}</span>
             </div>
           )}
         </div>
@@ -330,6 +432,8 @@ function ScienceSessionCard({
               ))}
             </div>
           )}
+          <ScienceFigureGallery figures={figures} />
+          <ScienceFileList files={files} />
           {session.note && (
             <div className="mt-2.5 text-[11.5px] leading-relaxed text-amber-500/90">
               {session.note}

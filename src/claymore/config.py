@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     """Expose ``POST /api/ask`` for the ``web/`` dashboard. Off by default: unlike Telegram it
     has no per-message auth and answers as one configured demo identity, so enable only for
     local dev / a trusted deployment. Retrieval scoping + grounding still apply (R10/R13)."""
+    web_api_token: SecretStr = SecretStr("")
+    """Bearer token for the web surface (``/api/agent``, ``/api/ask``, ``/api/local/*``).
+
+    When SET, every request to those routes must carry ``Authorization: Bearer <token>`` (compared
+    in constant time) — the lockdown mode for any networked/tunnelled deployment. When EMPTY, those
+    routes serve only loopback clients and refuse a non-loopback caller (403), so a local dev box is
+    friction-free but a bind to ``0.0.0.0`` / a shared host is not exposed. A reverse tunnel
+    (ngrok/cloudflared) forwards as a loopback client, so SET this before exposing via a tunnel —
+    the token is the only protection there (see ``api/security.py``)."""
     web_lab_id: str = "lab1"
     web_user_id: str = "web-user"
 
@@ -107,19 +116,33 @@ class Settings(BaseSettings):
     """Max seconds Claymore waits for a Claude Science run before giving up (the run keeps going
     server-side; Claymore just stops waiting and returns an honest 'still running' result)."""
     claude_science_allowed_domains: str = (
+        # Tier 1 — reputable, institution-run public data / reference sources (read-only lookups).
         "figshare.com,zenodo.org,datadryad.org,osf.io,dryad.org,cern.ch,"
         "nih.gov,ncbi.nlm.nih.gov,ebi.ac.uk,ensembl.org,uniprot.org,rcsb.org,wwpdb.org,pdbe.org,"
-        "biorxiv.org,medrxiv.org,arxiv.org,europepmc.org,ncbi.nlm.nih.gov,"
-        "reactome.org,kegg.jp,string-db.org,proteinatlas.org,genome.ucsc.edu,ucsc.edu,"
-        "github.com,githubusercontent.com,huggingface.co,addgene.org,pypi.org,files.pythonhosted.org"
+        "biorxiv.org,medrxiv.org,arxiv.org,europepmc.org,"
+        "reactome.org,kegg.jp,string-db.org,proteinatlas.org,genome.ucsc.edu,ucsc.edu,addgene.org,"
+        # Tier 2 — open-publishing package / dataset ecosystems, needed for pip installs + ML
+        # datasets. NOTE: anyone can publish here, so keep this list minimal. Arbitrary
+        # code/user-content hosts (github.com, raw/gist content, pastebins) are deliberately NOT
+        # included — on a domain-level allowlist they are attacker-controllable exfiltration
+        # channels, not data sources.
+        "pypi.org,files.pythonhosted.org,huggingface.co"
     )
     """Comma-separated allowlist of domains a Claude Science run MAY reach for the outside world
-    (dataset downloads, doc/DB lookups). Egress is deny-by-default (CLAUDE.md rule 7): the run's
-    external-network requests are auto-approved ONLY when the target host matches one of these base
-    domains (or a subdomain of one), and denied otherwise — so a run can pull public data but can't
-    exfiltrate to an arbitrary host. Set to empty to restore deny-all egress; extend per lab. A
-    match is exact host or a dot-boundary subdomain (``api.figshare.com`` matches ``figshare.com``;
-    ``figshare.com.evil.com`` does not)."""
+    (dataset downloads, package installs, doc/DB lookups). Egress is deny-by-default (CLAUDE.md
+    rule 7): a run's external-network request is auto-approved ONLY when the target host matches one
+    of these base domains (or a dot-boundary subdomain — ``api.figshare.com`` matches
+    ``figshare.com``; ``figshare.com.evil.com`` does not), and denied otherwise.
+
+    Two trust tiers (see the inline comments): Tier 1 institution-run public data/reference sources,
+    and Tier 2 open-publishing package/dataset ecosystems (PyPI, its file host, Hugging Face) needed
+    for pip + ML datasets. Arbitrary code / user-content hosts (github.com, raw/gist, pastebins) are
+    intentionally excluded: on a domain-level allowlist an attacker can host content under them, so
+    they become an exfiltration channel — add a *specific* repo per lab only when a run truly needs
+    it. The residual risk that a Tier-2 host serves a malicious package/dataset is bounded by the
+    unauthenticated, loopback-contained sandbox (it cannot publish or write-exfil without
+    credentials it does not hold) plus the run-level human-approval gate. Set to empty to restore
+    deny-all egress; extend per lab."""
 
     # --- cost / behavior knobs (R6) ---
     extraction_model: str = "claude-haiku-4-5-20251001"

@@ -22,8 +22,8 @@ A **Projects** tab. A project = a research question + a paper corpus. Flow:
    and Claymore **auto-drafts a conversational Slack message** summarizing it → one-tap **Send**.
 
 The moat is the **gap engine** (a real method, not "LLM opinion") + the **closing loop** on a live
-3D brain. Judges = Anthropic + Gladstone; they reward real scientific method, reproducibility,
-causal rigor, honest attribution.
+3D brain. The demo should demonstrate real scientific method, reproducibility, causal rigor, and
+honest attribution.
 
 ---
 
@@ -39,8 +39,8 @@ causal rigor, honest attribution.
 - **Never fabricate attribution.** Human-added sources carry the person; Exa-added carry
   `addedBy: 'exa'`, visibly distinct. This is a product hard rule (`CLAUDE.md` §2.1).
 - **Mock-default, live-behind-flag.** Follow `lib/agent.ts`: the mock path is the default; a live
-  path activates behind `import.meta.env.VITE_CLAYMORE_LIVE === '1'`. The demo runs the mock so it
-  never flakes on stage.
+  path activates behind `import.meta.env.VITE_CLAYMORE_LIVE === '1'`. A deterministic fallback keeps
+  the demo reliable when network/keys are unavailable.
 
 ---
 
@@ -422,13 +422,13 @@ Nothing else in those files changes.
 
 - **Latency is the show, not the enemy.** Real extraction is slow; stream nodes as they resolve and
   run Exa in parallel. Cache the built demo project so a re-run is instant if the live build lags.
-  Keep a pre-warmed fallback for stage.
+  Keep a pre-warmed deterministic fallback so the demo stays reliable.
 - **Keep the live seam.** Default to mock (`isLive`/`VITE_CLAYMORE_LIVE`), so the demo never depends
   on network/keys. Exa credits can run out (they did during planning) — mock must stand alone.
 - **Honest attribution** everywhere: Exa sources are `addedBy:'exa'`, visibly distinct. Don't let a
   node claim a human contributor it doesn't have.
 - **Wet-lab stays gated + simulated.** Route `proposedRun.mode==='wetlab'` to the Opentrons sim +
-  approval, never a fake physical run. Reads as responsible science (Gladstone likes this).
+  approval, never a fake physical run. Reads as responsible science.
 - **Don't disturb teammates.** Branch off `d347dd2`; only the 3 wiring lines touch shared files.
 - **3D perf:** cap nodes ~150, cap DPR, use InstancedMesh if scaling. Dispose geometries on unmount.
 - **Type re-use, not re-def:** import `Citation`/`Person` from `lib/types.ts`; extend by composition.
@@ -440,7 +440,7 @@ Nothing else in those files changes.
 1. Open project "CBX2 / tau regulation" (corpus pre-ingested for speed).
 2. Show 3 seed papers with **who added each**. Hit **Create Graph**.
 3. Sufficiency gate: "3 < 6 — sourcing validated papers" → 3 Exa papers stream in, marked auto.
-4. 3D graph **blooms** into clusters (the gasp).
+4. 3D graph **blooms** into clusters.
 5. Gap panel: **"3 gaps found."** Top = an open triad, score + bridging citations.
 6. Click it → the exact **subgraph + 2 papers** light up (evidence, not magic).
 7. **Run this now** → compute path (Claude Science) streams a trace → result.

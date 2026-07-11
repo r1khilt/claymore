@@ -206,11 +206,11 @@ async def test_send_unenrolled_user_raises() -> None:
 
 def test_directory_from_enrollments() -> None:
     directory = whatsapp_route.directory_from_enrollments(
-        "+12602099455:lab1:u_rikhin, +15550001111:lab1:u_lucas ,"
+        "+15550001112:lab1:u_rikhin, +15550001111:lab1:u_lucas ,"
     )
-    user = directory("+12602099455")
+    user = directory("+15550001112")
     assert user is not None
-    assert (user.id, user.lab_id, user.phone) == ("u_rikhin", "lab1", "+12602099455")
+    assert (user.id, user.lab_id, user.phone) == ("u_rikhin", "lab1", "+15550001112")
     assert directory("+15550001111") is not None
     assert directory("+19999999999") is None
 

@@ -6,9 +6,9 @@
 
 ## 1. What Claymore is (two layers)
 
-Claymore = a **full Shepherd-equivalent base layer** for research labs **+ a bio layer on top.** Build both. The base layer is intentionally a faithful reimplementation of askshepherd.ai's plumbing (this is a hackathon build and that's the point — replicate the base, then go beyond it). The bio layer is what makes it Claymore.
+Claymore = a **full lab-memory base layer** for research labs **+ a bio layer on top.** Build both. The base layer delivers the standard capabilities of this product category — ingest → ask → act → MCP → proactive (this is a hackathon build and that's the point — build the base fully, then go beyond it with the bio layer). The bio layer is what makes it Claymore.
 
-**Base layer (Shepherd-equivalent — build it fully, don't skimp):**
+**Base layer (build it fully, don't skimp):**
 1. **Ingest** a lab's scattered memory — Slack, Gmail, GitHub, Notion, Google Docs/Drive, Granola meeting notes, Claude Code / Codex session logs — into a **temporal knowledge graph with full provenance.** No tagging required; everything said/committed/written becomes memory.
 2. **Ask** (pull-based, on demand — this is the primary mode): text a question and get an **attributed** answer pulled from wherever it's buried, no matter how old or which source. This spans, at least:
    - **Person/idea recall:** *"what did Lucas suggest last week about the X protein?"*
@@ -27,7 +27,7 @@ Claymore = a **full Shepherd-equivalent base layer** for research labs **+ a bio
 
 The wedge: *golden ideas die in meetings and docs; Claymore remembers them, acts on them, and can run the experiment.*
 
-Reference product: **askshepherd.ai** ("know everything happening at your company" — ingest → ask → act → MCP → proactive). We replicate that base wholesale and add the bio layer (6–7).
+Product category: **company-memory assistants** ("know everything happening at your company" — ingest → ask → act → MCP → proactive). We build that base fully for research labs and add the bio layer (6–7).
 
 ---
 
@@ -51,7 +51,7 @@ Reference product: **askshepherd.ai** ("know everything happening at your compan
 | API / web | **FastAPI** + Uvicorn | webhook receivers, SMS inbound, dashboard API. |
 | Agent | **Anthropic API (Claude)** with tool use | direct SDK, not a heavy framework. Model routing: Haiku/Sonnet for extraction & cheap steps, Opus for query reasoning & planning. |
 | Connectors (read) | **Composio** | managed OAuth, per-user creds, 1000+ apps, Anthropic provider pkg. Use for Slack/Gmail/GitHub/Notion/Drive/Docs. |
-| Actions (write-back) | **Composio** (same layer, bidirectional) | draft reply, file issue, create Notion page, make calendar link — executed after human approval. This is Shepherd's "you just approve." |
+| Actions (write-back) | **Composio** (same layer, bidirectional) | draft reply, file issue, create Notion page, make calendar link — executed after human approval. This is the "you just approve" write-back pattern. |
 | MCP server (out) | **FastMCP** (Python) | expose lab memory as tools so the lab's Codex/Claude Code/Cursor can query it. Base-layer feature, build it. |
 | Custom connectors | Granola REST API; Claude Code / Codex log ingester | see §5. |
 | Memory | **Graphiti** (Apache-2.0, self-hosted) on **FalkorDB** | bi-temporal facts + episodic provenance. Neo4j is the conservative fallback. Do NOT use HelixDB for v1 (would mean reimplementing temporal logic). |
@@ -152,7 +152,7 @@ Every edge stores provenance: `source_platform, source_id, timestamp, author, co
 
 **Phase 0 → 1: scaffold + ingestion + memory.** Full scope is the two-layer system in §1 — nothing is cut. The only thing that's *sequenced* is internal build order, so each layer lands on a working one beneath it:
 
-`ingest+memory → ask → act (write-back) + MCP-out + proactive [= full Shepherd base] → compute execution → wet-lab execution [= bio layer]`.
+`ingest+memory → ask → act (write-back) + MCP-out + proactive [= full lab-memory base] → compute execution → wet-lab execution [= bio layer]`.
 
 Get attributed retrieval grounded and eval'd before wiring write-backs on top of it, and demo the base to a real lab before starting Opentrons. This is ordering, not scope reduction — all of §1 ships.
 

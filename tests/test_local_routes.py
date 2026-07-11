@@ -1,8 +1,10 @@
 """Route smoke tests for the local-store endpoints (``/api/local/*``).
 
-These are ungated (no ``WEB_API_ENABLED``, no key) because they touch only the user's own file.
-The suite drives the full round-trip through FastAPI: read state, save + restore + delete a chat,
-patch settings/profile, log + clear an error — pointing the store at a throwaway dir.
+They need no ``WEB_API_ENABLED`` or model key (they touch only the user's own file), but they sit
+behind the loopback-or-token web-auth gate (``api/security.py``); the in-process TestClient counts
+as a loopback peer, so no token is needed here. The suite drives the full round-trip through
+FastAPI: read state, save + restore + delete a chat, patch settings/profile, log + clear an error
+— pointing the store at a throwaway dir.
 """
 
 from __future__ import annotations
@@ -71,3 +73,19 @@ def test_error_log_post_and_clear() -> None:
     assert len(client.get("/api/local/state").json()["errorLog"]) == 1
     assert client.delete("/api/local/errors").status_code == 200
     assert client.get("/api/local/state").json()["errorLog"] == []
+
+
+def test_api_keys_masked_over_the_wire() -> None:
+    """The stored Anthropic/Voyage keys are never sent to the client raw — masked on read, and a
+    masked echo back from the Settings panel never wipes the real key."""
+    from claymore import local_store
+    from claymore.local_store import MASKED_SECRET
+
+    client = TestClient(app)
+    client.patch("/api/local/settings", json={"anthropicApiKey": "sk-ant-xyz"})
+    # GET /state masks the stored key.
+    assert client.get("/api/local/state").json()["settings"]["anthropicApiKey"] == MASKED_SECRET
+    # The PATCH response is masked too, and echoing the mask keeps the real key server-side.
+    echoed = client.patch("/api/local/settings", json={"anthropicApiKey": MASKED_SECRET}).json()
+    assert echoed["anthropicApiKey"] == MASKED_SECRET
+    assert local_store.stored_anthropic_key() == "sk-ant-xyz"

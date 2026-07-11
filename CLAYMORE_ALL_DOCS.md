@@ -25,9 +25,9 @@
 
 ## 1. What Claymore is (two layers)
 
-Claymore = a **full Shepherd-equivalent base layer** for research labs **+ a bio layer on top.** Build both. The base layer is intentionally a faithful reimplementation of askshepherd.ai's plumbing (this is a hackathon build and that's the point — replicate the base, then go beyond it). The bio layer is what makes it Claymore.
+Claymore = a **full lab-memory base layer** for research labs **+ a bio layer on top.** Build both. The base layer delivers the standard capabilities of this product category — ingest → ask → act → MCP → proactive (this is a hackathon build and that's the point — build the base fully, then go beyond it with the bio layer). The bio layer is what makes it Claymore.
 
-**Base layer (Shepherd-equivalent — build it fully, don't skimp):**
+**Base layer (build it fully, don't skimp):**
 1. **Ingest** a lab's scattered memory — Slack, Gmail, GitHub, Notion, Google Docs/Drive, Granola meeting notes, Claude Code / Codex session logs — into a **temporal knowledge graph with full provenance.** No tagging required; everything said/committed/written becomes memory.
 2. **Ask** (pull-based, on demand — this is the primary mode): text a question and get an **attributed** answer pulled from wherever it's buried, no matter how old or which source. This spans, at least:
    - **Person/idea recall:** *"what did Lucas suggest last week about the X protein?"*
@@ -46,7 +46,7 @@ Claymore = a **full Shepherd-equivalent base layer** for research labs **+ a bio
 
 The wedge: *golden ideas die in meetings and docs; Claymore remembers them, acts on them, and can run the experiment.*
 
-Reference product: **askshepherd.ai** ("know everything happening at your company" — ingest → ask → act → MCP → proactive). We replicate that base wholesale and add the bio layer (6–7).
+Product category: **company-memory assistants** ("know everything happening at your company" — ingest → ask → act → MCP → proactive). We build that base fully for research labs and add the bio layer (6–7).
 
 ---
 
@@ -70,7 +70,7 @@ Reference product: **askshepherd.ai** ("know everything happening at your compan
 | API / web | **FastAPI** + Uvicorn | webhook receivers, SMS inbound, dashboard API. |
 | Agent | **Anthropic API (Claude)** with tool use | direct SDK, not a heavy framework. Model routing: Haiku/Sonnet for extraction & cheap steps, Opus for query reasoning & planning. |
 | Connectors (read) | **Composio** | managed OAuth, per-user creds, 1000+ apps, Anthropic provider pkg. Use for Slack/Gmail/GitHub/Notion/Drive/Docs. |
-| Actions (write-back) | **Composio** (same layer, bidirectional) | draft reply, file issue, create Notion page, make calendar link — executed after human approval. This is Shepherd's "you just approve." |
+| Actions (write-back) | **Composio** (same layer, bidirectional) | draft reply, file issue, create Notion page, make calendar link — executed after human approval. This is the "you just approve" write-back pattern. |
 | MCP server (out) | **FastMCP** (Python) | expose lab memory as tools so the lab's Codex/Claude Code/Cursor can query it. Base-layer feature, build it. |
 | Custom connectors | Granola REST API; Claude Code / Codex log ingester | see §5. |
 | Memory | **Graphiti** (Apache-2.0, self-hosted) on **FalkorDB** | bi-temporal facts + episodic provenance. Neo4j is the conservative fallback. Do NOT use HelixDB for v1 (would mean reimplementing temporal logic). |
@@ -168,7 +168,7 @@ Every edge stores provenance: `source_platform, source_id, timestamp, author, co
 
 **Phase 0 → 1: scaffold + ingestion + memory.** Full scope is the two-layer system in §1 — nothing is cut. The only thing that's *sequenced* is internal build order, so each layer lands on a working one beneath it:
 
-`ingest+memory → ask → act (write-back) + MCP-out + proactive [= full Shepherd base] → compute execution → wet-lab execution [= bio layer]`.
+`ingest+memory → ask → act (write-back) + MCP-out + proactive [= full lab-memory base] → compute execution → wet-lab execution [= bio layer]`.
 
 Get attributed retrieval grounded and eval'd before wiring write-backs on top of it, and demo the base to a real lab before starting Opentrons. This is ordering, not scope reduction — all of §1 ships.
 
@@ -194,13 +194,13 @@ See `BUILD_PLAN.md` for the full milestone breakdown, risk register, and open de
 
 # Claymore — Validated Build Plan
 
-*A full Shepherd-equivalent base for research labs — ingest scattered memory → ask over SMS → act (draft/file/create, you approve) → serve the lab's coding agents via MCP → reach out proactively — plus a bio layer on top: science-native memory with provenance, and the ability to run the experiment (compute first, wet-lab later behind a hard gate).*
+*A full lab-memory base for research labs — ingest scattered memory → ask over SMS → act (draft/file/create, you approve) → serve the lab's coding agents via MCP → reach out proactively — plus a bio layer on top: science-native memory with provenance, and the ability to run the experiment (compute first, wet-lab later behind a hard gate).*
 
 ---
 
 ## 0. TL;DR / decisions up front
 
-- **Two layers, both fully built.** **Base = a faithful askshepherd.ai replica** (ingest → ask → **act** → **MCP-out** → **proactive**) — replicating the base is a stated goal, not something to avoid. **Bio layer = science-native memory + provenance + run-the-experiment**, sitting on top. Nothing is descoped.
+- **Two layers, both fully built.** **Base = a complete lab-memory system** (ingest → ask → **act** → **MCP-out** → **proactive**) — building the base fully is a stated goal, not something to avoid. **Bio layer = science-native memory + provenance + run-the-experiment**, sitting on top. Nothing is descoped.
 - **Build order is the whole ballgame** (ordering, not scope reduction). Sequence: **ingest+memory → ask (attributed) → act + MCP-out + proactive [full base] → computational execution → wet-lab execution [bio].** Each layer lands on a working one beneath it.
 - **Bio ontology is the differentiator on top of the base.** Proteins, assays, protocols, hypotheses, results are first-class graph entities; every fact carries who/where/when.
 - **Memory layer: Graphiti on FalkorDB.** Bi-temporal facts + episodic provenance are exactly "who said what, when, and is it still true." It beats vector-only memory on the temporal/multi-hop queries this product lives on (~64% vs ~49% on LongMemEval in independent tests). Skip HelixDB for v1.
@@ -296,7 +296,7 @@ The wedge is emotional and concrete: *your lab's golden ideas stop dying in meet
 
 ### 4.4 Messaging — **Telegram now, Twilio SMS for prod**
 - **A2P 10DLC reality:** any app→person SMS to US numbers must register a Brand + Campaign with **The Campaign Registry** via Twilio. Brand approval is fast; **campaign review is 10–15 days.** Standard/Low-Volume brands need an **EIN**; sole-proprietor path exists but caps throughput. As of June 30 2026, campaigns require **PrivacyPolicyUrl + TermsAndConditionsUrl** (publicly reachable HTTPS). Some use cases need extra carrier review.
-- **Consequence:** start registration on day 1 (get the EIN + a real privacy/ToS page up), but **do all agent iteration on Telegram** (free, instant, no gate). Flip prod to Twilio when the campaign clears. Optional later: iMessage via Sendblue/Loop for the Shepherd-like feel — but it's a vendor dependency and Apple-ToS gray zone, so it's a nice-to-have, not the spine.
+- **Consequence:** start registration on day 1 (get the EIN + a real privacy/ToS page up), but **do all agent iteration on Telegram** (free, instant, no gate). Flip prod to Twilio when the campaign clears. Optional later: iMessage via Sendblue/Loop for the polished-messaging feel — but it's a vendor dependency and Apple-ToS gray zone, so it's a nice-to-have, not the spine.
 
 ### 4.5 Agent — **Claude tool-loop, model-routed**
 - Anthropic SDK directly (Composio provides the tool schemas). Route models: cheap model for extraction/classification/summaries, strong model for query planning and multi-hop reasoning.
@@ -306,7 +306,7 @@ The wedge is emotional and concrete: *your lab's golden ideas stop dying in meet
 - **Temporal-expression resolver** (`agent/temporal.py`): signature queries use fuzzy relative time ("last week," "a couple months ago"). Resolve these to an explicit bi-temporal `valid_from/valid_to` window in the *asker's* timezone (captured at enrollment), and echo the resolved window in the answer ("facts from Jun 30–Jul 6") so temporal ambiguity is visible, not silent.
 
 ### 4.5a Action layer (write-back) — **base layer, via Composio**
-- This is Shepherd's *"turns what was said into work — drafts the reply, files the bug, makes the link. You just approve."* Composio is bidirectional, so the same connector layer that reads Slack/Gmail/GitHub/Notion also **writes**: post a Slack reply, send/draft an email, open a GitHub issue, create a Notion page, add a calendar event.
+- This is the "you just approve" write-back pattern: *"turns what was said into work — drafts the reply, files the bug, makes the link. You just approve."* Composio is bidirectional, so the same connector layer that reads Slack/Gmail/GitHub/Notion also **writes**: post a Slack reply, send/draft an email, open a GitHub issue, create a Notion page, add a calendar event.
 - **Every write goes through an approval gate** (`actions/approvals.py`): the agent proposes the exact payload, the human one-taps ✅/❌ over the same chat channel. No silent writes. This gate is also where you get safety and trust for free.
 - **Approval UX must work on the prod channel, not just Telegram.** Telegram has inline buttons; **Twilio SMS has none** — approval is a free-text reply. Model each pending approval as a short-lived, numbered token in Postgres (`approve A3` / `reject A3`); with a single pending action a bare "yes/no" resolves. Never map an ambiguous "yes" to the wrong pending action.
 - **Write-backs are idempotent.** Attach an idempotency key to every Composio write (jobs already have them; write actions must too) so a lost ack or a retry can't double-file an issue or double-send an email. There is no un-send, so this is a correctness requirement, not an optimization.
@@ -395,11 +395,11 @@ This is what lets the agent answer: *"Lucas suggested testing the Y hypothesis o
 - **Ship to 1–2 friendly labs** (your Broad/MedARC network is the unfair advantage here). This is the MVP.
 - **Exit:** a real lab member texts several *different kinds* of questions (a meeting, an old doc, a decision, a follow-up) and gets correct, cited answers they couldn't have gotten in <5 min themselves.
 
-### Phase 2.5 — Complete the Shepherd base: Act + MCP-out + Proactive (≈ weeks 5–7, overlaps P2)
+### Phase 2.5 — Complete the lab-memory base: Act + MCP-out + Proactive (≈ weeks 5–7, overlaps P2)
 - **Act:** wire Composio write actions (`draft_reply`, `file_issue`, `create_page`, `make_link`) behind the approval gate. "Summarize that thread and file it as a GitHub issue" → agent proposes → you approve → it's filed. Approval works over **SMS via numbered tokens** (not just Telegram buttons) and writes are **idempotent** (§4.5a). Add an **action-correctness eval** (did it draft the *right* issue/reply?) to `evals/`.
 - **MCP-out:** stand up the FastMCP server exposing `search_lab_memory` / `who_worked_on` / `what_was_decided`; connect it in Claude Code/Cursor and query lab memory from inside an editor.
 - **Proactive:** one scheduled digest + one event trigger (never-tested-idea or contradiction alert).
-- **Exit:** the base is now feature-complete vs Shepherd — a lab member can ask, get things done ("you just approve"), and their coding agents can pull lab context. This is the strong demo even before bio execution.
+- **Exit:** the base is now feature-complete for the category — a lab member can ask, get things done ("you just approve"), and their coding agents can pull lab context. This is the strong demo even before bio execution.
 
 ### Phase 3 — Computational execution (≈ weeks 6–10)
 - `expand_idea` → `run_compute`: build Claymore's **own science agent** (Claude Agent SDK + Anthropic science Agent Skills + MCP), running on **E2B** (light) / **Modal** (real/GPU) / lab **HPC over SSH**, able to call **BioNeMo** workflows and **Nextflow/nf-core** pipelines. Texts back a reproducible summary (figure + code + env).
@@ -425,7 +425,7 @@ RBAC + scoping, immutable audit, provenance surfacing, cost dashboards for extra
 | R2 | **Confident wrong attribution** destroys trust in a science context. | High | Grounding rule (§CLAUDE.md rule 1); eval harness measures hallucinated-source rate from Phase 1. |
 | R3 | **Wet-lab liability / biosafety.** Agent-run physical protocols = uninsurable if ungated; few target labs even have robots. | High | Simulate-first + mandatory human approval; opt-in only; lead with computational execution instead. |
 | R4 | **A2P 10DLC 10–15 day gate + EIN requirement** blocks "text a number." | Med | Start registration day 1; pilot on Telegram so it never blocks iteration. |
-| R5 | **Base is a deliberate Shepherd replica** — that's the plan, not a risk. Differentiation lives entirely in the bio layer. | Low | Replicate base fully; put the effort/originality into ontology, provenance-for-reproducibility, and the run-the-experiment loop. (This is a hackathon build — replicating the base is a feature.) |
+| R5 | **Base overlaps an existing product category** — that's the plan, not a risk. Differentiation lives entirely in the bio layer. | Low | Build the base fully; put the effort/originality into ontology, provenance-for-reproducibility, and the run-the-experiment loop. (This is a hackathon build — a complete base is a feature.) |
 | R6 | **Ingestion/extraction cost** at backfill scale (LLM per episode) — *and* the cost model must not forget Voyage embeddings (every episode is embedded) or Composio's ~1k/mo free-tier execution cap. | Med | Cheap extraction model, prompt-cache + Batch, concurrency caps, resumable backfill, per-lab spend caps. Add an `Embedder` adapter (embedding fallback). Hackathon: scope the pilot backfill small (recent window / a few channels), produce a concrete $ estimate before any full backfill, upgrade tiers only when a pilot needs it. |
 | R7 | **Data sensitivity** — unpublished IP, possible PHI. | High | Per-user/per-lab scope at retrieval; SOC2 posture from Composio/Granola; encrypt; audit; no data in logs. |
 | R8 | **Granola paywall** (API needs Business plan) + iMessage has no API. | Low-Med | Treat Granola as a paid-tier connector; deprioritize iMessage, use SMS/Telegram spine. |
@@ -461,7 +461,7 @@ RBAC + scoping, immutable audit, provenance surfacing, cost dashboards for extra
 
 ## 10. Sources this plan was validated against (July 2026)
 
-Composio (docs, changelog, connectors review); HelixDB (GitHub, YC, GA/ProductHunt, independent repo review); Graphiti vs Mem0 vs Letta (LongMemEval independent evals, ~63.8% vs ~49.0%; Graphiti Apache-2.0, Zep Community Edition deprecated); Twilio A2P 10DLC (official docs: 10–15 day review, EIN/brand/campaign, June-30-2026 privacy/ToS URL requirement); Opentrons (Python Protocol API v2 ≥2.28, HTTP API, `opentrons.simulate`, OpentronsAI); Granola (public REST API launch, Business/Enterprise gating, $14/$35 pricing, MCP); **Claude Science** (Anthropic launch ~June 30 2026, beta all paid tiers, Opus 4.8, multi-agent, runs on your infra/Modal/HPC, MCP+connectors inbound, NVIDIA BioNeMo/LatchBio/Helix integrations — verified it's a supervised app, not a headless API); askshepherd.ai (reference product). Verify anything pricing-/API-version-sensitive at build time — these move.
+Composio (docs, changelog, connectors review); HelixDB (GitHub, YC, GA/ProductHunt, independent repo review); Graphiti vs Mem0 vs Letta (LongMemEval independent evals, ~63.8% vs ~49.0%; Graphiti Apache-2.0, Zep Community Edition deprecated); Twilio A2P 10DLC (official docs: 10–15 day review, EIN/brand/campaign, June-30-2026 privacy/ToS URL requirement); Opentrons (Python Protocol API v2 ≥2.28, HTTP API, `opentrons.simulate`, OpentronsAI); Granola (public REST API launch, Business/Enterprise gating, $14/$35 pricing, MCP); **Claude Science** (Anthropic launch ~June 30 2026, beta all paid tiers, Opus 4.8, multi-agent, runs on your infra/Modal/HPC, MCP+connectors inbound, NVIDIA BioNeMo/LatchBio/Helix integrations — verified it's a supervised app, not a headless API); company-memory assistants (product-category reference). Verify anything pricing-/API-version-sensitive at build time — these move.
 
 
 
@@ -848,9 +848,9 @@ This is the risk that matters most. Three layers of defense:
 
 ---
 
-## R5 — Base is a deliberate Shepherd replica (reframed: not a risk)
+## R5 — Base overlaps an existing product category (reframed: not a risk)
 
-No mitigation needed — replicating the base is the plan. Put originality into the bio layer (ontology, provenance-for-reproducibility, execution). One guard: keep the `Episode` schema + ontology vendor-neutral so the base plumbing stays swappable (feeds R9).
+No mitigation needed — building the base fully is the plan. Put originality into the bio layer (ontology, provenance-for-reproducibility, execution). One guard: keep the `Episode` schema + ontology vendor-neutral so the base plumbing stays swappable (feeds R9).
 
 ---
 
@@ -886,7 +886,7 @@ No mitigation needed — replicating the base is the plan. Put originality into 
 
 **Approach: treat Granola as a paid-tier connector; keep the SMS/Telegram spine; deprioritize iMessage.**
 - Granola: official REST API needs the **Business plan** ($14/user/mo) for the personal API. Budget for it; it's the only clean path (don't reverse-engineer the local cache). MCP server is an alternative ingestion route.
-- iMessage: no official API. Only via a Mac bridge (BlueBubbles) or a paid vendor (Sendblue/Loop), Apple-ToS gray zone. **Do not build the core on it.** SMS (Twilio) + Telegram cover the interface universally. Revisit iMessage only as a nice-to-have for the Shepherd-like feel, per-lab opt-in.
+- iMessage: no official API. Only via a Mac bridge (BlueBubbles) or a paid vendor (Sendblue/Loop), Apple-ToS gray zone. **Do not build the core on it.** SMS (Twilio) + Telegram cover the interface universally. Revisit iMessage only as a nice-to-have for the polished-messaging feel, per-lab opt-in.
 
 **Definition of done:** Granola connector works against the real API on a Business account; nothing critical depends on iMessage.
 

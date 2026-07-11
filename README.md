@@ -30,10 +30,10 @@ whole path is usable without keys and flips to real when they're present):
 - **ML analysis** (`execute/ml_analysis.py`) — trains a model on a dataset the lab *actually
   referenced in memory* (resolved + attributed, never fabricated) and returns a grounded
   verdict (supported / refuted / inconclusive) with inline charts.
-- **Claude Science** (`execute/claude_science.py`) — drives Anthropic's Claude Science
-  workbench at `localhost:8765` via **computer use** (screenshot → action → repeat), streaming
-  each step into a collapsible "watch Claymore work" panel; previews a simulated run when the
-  app isn't up.
+- **Claude Science** (`execute/claude_science.py`) — drives Anthropic's local Claude Science
+  daemon at `localhost:8765` over its **local HTTP API** (start a run, then poll its frame for
+  status + results — no computer-use/vision loop), streaming each step into a collapsible "watch
+  Claymore work" panel; previews a simulated run when the app isn't up.
 
 Compute-sandbox and wet-lab execution remain gated and later-phase.
 

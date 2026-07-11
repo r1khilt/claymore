@@ -82,6 +82,37 @@ def test_settings_whitelist_and_invalid_reasoning() -> None:
     assert ls.reasoning_budget() == (6, 2048)
 
 
+# --- secret masking: keys never leave the server raw; a masked echo never wipes the key --------
+
+
+def test_stored_keys_masked_on_read() -> None:
+    ls.update_settings({"anthropicApiKey": "sk-ant-realkey", "voyageApiKey": "pa-realkey"})
+    masked = ls.redact_settings(ls.get_settings_doc())
+    assert masked["anthropicApiKey"] == ls.MASKED_SECRET
+    assert masked["voyageApiKey"] == ls.MASKED_SECRET
+    # The stored document itself is untouched — the raw key is still usable server-side.
+    assert ls.stored_anthropic_key() == "sk-ant-realkey"
+
+
+def test_empty_key_is_not_masked() -> None:
+    assert ls.redact_settings({"anthropicApiKey": "", "voyageApiKey": ""}) == {
+        "anthropicApiKey": "",
+        "voyageApiKey": "",
+    }
+
+
+def test_masked_echo_never_overwrites_stored_key() -> None:
+    ls.update_settings({"anthropicApiKey": "sk-ant-realkey"})
+    # The client echoes back the mask it was shown → treated as "unchanged", key preserved.
+    ls.update_settings({"anthropicApiKey": ls.MASKED_SECRET})
+    assert ls.stored_anthropic_key() == "sk-ant-realkey"
+    # A genuinely new key still applies; an explicit empty string still clears.
+    ls.update_settings({"anthropicApiKey": "sk-ant-new"})
+    assert ls.stored_anthropic_key() == "sk-ant-new"
+    ls.update_settings({"anthropicApiKey": ""})
+    assert ls.stored_anthropic_key() == ""
+
+
 # --- injection-shaped + unicode content is data, stored verbatim -------------------------------
 
 

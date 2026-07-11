@@ -118,7 +118,7 @@ function GapCard({
             <ShieldAlert className="size-3" strokeWidth={2.25} /> wet-lab · gated
           </span>
         ) : (
-          <span className="text-[11px] text-faint">{gap.proposedRun.label}</span>
+          <span className="text-[11px] text-faint">compute · Modal sandbox</span>
         )}
       </div>
     </motion.div>

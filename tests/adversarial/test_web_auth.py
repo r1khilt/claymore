@@ -63,6 +63,25 @@ def test_token_required_even_from_loopback(monkeypatch: pytest.MonkeyPatch) -> N
     security.require_web_auth(_req("203.0.113.7", {"authorization": "Bearer s3cret-token"}))
 
 
+def test_whitespace_padded_env_token_still_authenticates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A trailing newline/space in WEB_API_TOKEN (shell export, CI secret injection) must not
+    # silently lock out every request: the configured value is stripped before comparison.
+    for padded in ("tok\n", "tok ", " tok\t\n"):
+        _use_token(monkeypatch, padded)
+        security.require_web_auth(_req("1.2.3.4", {"authorization": "Bearer tok"}))
+        with pytest.raises(HTTPException):
+            security.require_web_auth(_req("1.2.3.4", {"authorization": "Bearer wrong"}))
+
+
+def test_whitespace_only_token_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A whitespace-only WEB_API_TOKEN strips to empty and behaves as unset: loopback-only mode,
+    # not a gate whose only accepted credential is whitespace.
+    _use_token(monkeypatch, "  \n")
+    security.require_web_auth(_req("127.0.0.1"))
+    with pytest.raises(HTTPException):
+        security.require_web_auth(_req("203.0.113.7"))
+
+
 def test_bearer_parsing_rejects_near_misses(monkeypatch: pytest.MonkeyPatch) -> None:
     _use_token(monkeypatch, "tok")
     # Case-insensitive scheme, trailing space tolerated.

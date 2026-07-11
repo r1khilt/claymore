@@ -52,10 +52,10 @@ def require_web_auth(request: Request) -> None:
     """FastAPI dependency guarding the web surface. Raises 403 unless the caller is authorized
     (valid bearer token when one is configured, else a loopback client)."""
     settings = get_settings()
-    token = settings.web_api_token.get_secret_value()
+    token = settings.web_api_token.get_secret_value().strip()
     if token:
         received = _bearer_token(request)
-        if received and hmac.compare_digest(token, received):
+        if hmac.compare_digest(token, received):
             return
         _log.warning("web.auth.rejected", reason="bad_token", path=request.url.path)
         raise HTTPException(status_code=403, detail="missing or invalid API token")

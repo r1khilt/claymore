@@ -349,10 +349,16 @@ class ComposioConnectorHub(_StreamingHub):
             }
             if since is not None:
                 arguments["since"] = ensure_aware(since).isoformat().replace("+00:00", "Z")
-            data = await self._composio_execute(
-                GITHUB_COMMITS_SLUG,
-                arguments,
-            )
+            try:
+                data = await self._composio_execute(
+                    GITHUB_COMMITS_SLUG,
+                    arguments,
+                )
+            except ComposioExecutionError:
+                # e.g. GitHub 409 "Git Repository is empty" — one unreadable repo must not
+                # abort the account's whole backfill.
+                logger.warning("composio.github_repo_skipped", repo=full_name, page=page)
+                return
             commits = github_commits(data)
             if not commits:  # empty page ⇒ last page
                 return

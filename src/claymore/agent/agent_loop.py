@@ -53,6 +53,7 @@ from claymore.agent.hardware import (
     Robot,
     capability_gap,
     catalog_summary,
+    instrument_def,
     palette_color,
 )
 from claymore.agent.tools import facts_to_citations, search_memory
@@ -262,14 +263,47 @@ class AccessoryOut(_CamelModel):
     slot: str | None = None
 
 
+# Off-deck instrument kinds the renderer draws bespoke, animated models for (mirrors
+# InstrumentKind in web/src/lib/hardware.ts). Anything a liquid handler can't be goes here.
+InstrumentKindLit = Literal[
+    "centrifuge",
+    "microscope",
+    "balance",
+    "incubator",
+    "sequencer",
+    "electroporator",
+    "sonicator",
+    "cytometer",
+    "colony_picker",
+    "generic",
+]
+
+
+class InstrumentOut(_CamelModel):
+    """An off-deck benchtop instrument (centrifuge, imager…) a robot arm hands a plate to.
+
+    Present only on a GENERAL (non-Opentrons) scene: the deck preps the plate, then a robot arm
+    carries it to this instrument, which runs the off-deck step. ``side`` is which edge of the deck
+    it stands beside (the bench grows to fit it)."""
+
+    id: str
+    kind: InstrumentKindLit
+    display: str
+    label: str | None = None
+    side: Literal["right", "left", "back"] = "right"
+
+
 class DeckOut(_CamelModel):
-    """The deck layout: robot + pipette(s) + placed labware + modules + accessories."""
+    """The deck layout: robot + pipette(s) + placed labware + modules + accessories.
+
+    ``instruments`` are off-deck benchtop instruments (empty for a pure Opentrons scene)."""
 
     robot: str
     labware: list[LabwareOut]
     modules: list[ModuleOut]
     pipettes: list[PipetteOut]
     accessories: list[AccessoryOut]
+    instruments: list[InstrumentOut] = []
 
 
 # The animatable verbs the renderer + run player understand (mirrors StepKind in protocol.ts).
@@ -292,6 +326,9 @@ StepKindLit = Literal[
     "open_lid",
     "close_lid",
     "read_absorbance",
+    "load_instrument",
+    "run_instrument",
+    "unload_instrument",
     "delay",
     "comment",
 ]
@@ -307,6 +344,7 @@ class StepOut(_CamelModel):
     volume: float | None = None
     liquid: str | None = None
     module_id: str | None = None
+    instrument_id: str | None = None
     to_slot: str | None = None
     temperature: float | None = None
     rpm: float | None = None
@@ -866,7 +904,9 @@ async def _run_tool(
     if name == "ingest_source":
         return await _tool_ingest(store, user, args, settings), [], None
     if name == "generate_opentrons_protocol":
-        outcome, protocol = _tool_generate_protocol(_str(args, "request"))
+        outcome, protocol = await _tool_generate_protocol(
+            _str(args, "request"), settings, last_protocol
+        )
         return outcome, [], protocol
     if name == "run_bio_analysis":
         return _tool_run_analysis(_str(args, "kind"), _str(args, "target")), [], None
@@ -975,14 +1015,25 @@ async def _tool_ingest(
     )
 
 
-def _tool_generate_protocol(request: str) -> tuple[_ToolOutcome, ProtocolOut | None]:
-    """Build a scene from the request. Opentrons-capable work maps to the catalog; a capability a
-    liquid handler lacks becomes a general lab-robot scene + a PyLabRobot script (never a refusal).
-
-    The build (``_build_protocol``) composes a valid deck from the supported catalog
-    (``hardware.py``) — it never invents labware that isn't on the deck.
+async def _tool_generate_protocol(
+    request: str, settings: Settings, last_protocol: ProtocolOut | None
+) -> tuple[_ToolOutcome, ProtocolOut | None]:
+    """Author a scene for the request. Opus (``scene_designer.design_scene``) designs the whole
+    scene — any experiment, real copy-pasteable code, Opentrons or a general lab robot — and if
+    that's unavailable (no key) or its payload can't be repaired into something renderable, we fall
+    back to the deterministic catalog templates (``_build_protocol``). Either path returns a scene
+    that only references real, on-deck hardware; neither runs anything.
     """
-    protocol = _build_protocol(request)
+    from claymore.agent.scene_designer import design_scene  # lazy: avoids an import cycle
+
+    protocol: ProtocolOut | None = None
+    try:
+        protocol = await design_scene(request, settings=settings, last_protocol=last_protocol)
+    except Exception as exc:  # design_scene shouldn't raise, but never let the loop crash on it
+        _log.warning("agent.scene_design_failed", error_type=type(exc).__name__)
+        protocol = None
+    if protocol is None:
+        protocol = _build_protocol(request)
     if protocol.mode == "general":
         tail = (
             " Part of it is off the Opentrons deck (general lab robot + PyLabRobot); tell the user "
@@ -2077,51 +2128,137 @@ def _normalization() -> ProtocolOut:
     )
 
 
+# Well-plate a request names; an unsupported count snaps to the nearest real plate so "324-well"
+# resolves to the 384-well, never a silent 96 (parity with plateKindFromRequest in protocol.ts).
+_PLATE_BY_COUNT: dict[int, str] = {
+    6: "wellplate_6",
+    12: "wellplate_12",
+    24: "wellplate_24",
+    48: "wellplate_48",
+    96: "wellplate_96",
+    384: "wellplate_384",
+}
+
+
+def _plate_kind_from_request(request: str) -> str:
+    """The well-plate ``request`` names, snapping an impossible count to the nearest real plate."""
+    match = re.search(r"(\d{1,4})[\s-]*well", request.lower())
+    if match is None:
+        return "wellplate_96"
+    n = int(match.group(1))
+    if n in _PLATE_BY_COUNT:
+        return _PLATE_BY_COUNT[n]
+    nearest = min(_PLATE_BY_COUNT, key=lambda c: (abs(c - n), c))
+    return _PLATE_BY_COUNT[nearest]
+
+
+def _spin_params_from_request(request: str) -> tuple[int, int | None]:
+    """Parse a run duration (seconds) + optional speed (rpm/rcf) from the request text."""
+    q = request.lower()
+    seconds = 0
+    minutes = re.search(r"(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min)\b", q)
+    secs = re.search(r"(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b", q)
+    if minutes:
+        seconds += round(float(minutes.group(1)) * 60)
+    if secs:
+        seconds += round(float(secs.group(1)))
+    if not seconds:
+        seconds = 10  # a sensible default run
+    rpm_match = re.search(r"(\d[\d,]*)\s*(?:rpm|rcf|x\s*g|×\s*g)\b", q)
+    rpm = int(rpm_match.group(1).replace(",", "")) if rpm_match else None
+    return seconds, rpm
+
+
+def _human_time(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, rem = divmod(seconds, 60)
+    return f"{minutes} min {rem} s" if rem else f"{minutes} min"
+
+
+def _per_well_volume(cap_ul: int) -> int:
+    """A tidy per-well fill volume scaled to the plate's working volume (µL)."""
+    return max(20, min(250, round(cap_ul * 0.35 / 10) * 10))
+
+
+def _run_label(inst: object, seconds: int, rpm: int | None) -> str:
+    verb = getattr(inst, "verb", "run")
+    base = f"{verb[:1].upper()}{verb[1:]} {_human_time(seconds)}"
+    return f"{base} · {rpm:,} rpm" if rpm else base
+
+
 def _general_scene(request: str, gap: CapabilityGap) -> ProtocolOut:
-    liq = _liquids(["Sample", "Buffer"])
-    sample, buffer = liq[0].id, liq[1].id
-    cap = gap.capability[:1].upper() + gap.capability[1:]
+    """A general lab-robot scene: prep a plate on-deck, then a robot arm hands it to an off-deck
+    instrument (centrifuge, imager…) that runs the step. Mirrors ``composeInstrumentScene`` in
+    protocol.ts. Nothing runs — the PyLabRobot script is what such a robot would execute."""
+    inst = instrument_def(gap.kind)
+    plate_kind = _plate_kind_from_request(request)
+    pdef = LABWARE.get(plate_kind, LABWARE["wellplate_96"])
+    per_well = _per_well_volume(pdef.well_ul or 300)
+    seconds, rpm = _spin_params_from_request(request)
+    liq = _liquids(["Sample"])
+    sample = liq[0].id
+    cap = inst.capability[:1].upper() + inst.capability[1:]
+    lower = inst.display.lower()
+
     steps: list[StepOut] = [
         StepOut(kind="comment", label=f"Plan: {request.strip()[:80]}"),
-        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up tips"),
+        StepOut(kind="pick_up_tip", labware_id="tips", well="A1", label="Pick up tip"),
     ]
-    for col in range(1, 7):
-        steps.append(
-            StepOut(
-                kind="aspirate",
-                labware_id="res",
-                well="A1",
-                volume=100,
-                liquid=buffer,
-                label="Aspirate 100 µL · buffer",
+    # Fill every well of the plate (single channel, well by well — a 24/384-well pitch an
+    # 8-channel head can't span). This is the request's literal "pipette every well".
+    for row in range(pdef.rows):
+        for col in range(pdef.cols):
+            well = _rc_to_well(row, col)
+            steps.append(
+                StepOut(
+                    kind="aspirate",
+                    labware_id="res",
+                    well="A1",
+                    volume=per_well,
+                    liquid=sample,
+                    label=f"Aspirate {per_well} µL · sample",
+                )
             )
-        )
-        steps.append(
-            StepOut(
-                kind="dispense",
-                labware_id="plate",
-                well=f"A{col}",
-                volume=100,
-                liquid=buffer,
-                label=f"Prep samples · column {col}",
+            steps.append(
+                StepOut(
+                    kind="dispense",
+                    labware_id="plate",
+                    well=well,
+                    volume=per_well,
+                    liquid=sample,
+                    label=f"Dispense {per_well} µL · {well}",
+                )
             )
-        )
     steps += [
-        StepOut(kind="drop_tip", label="Drop tips"),
+        StepOut(kind="drop_tip", label="Drop tip"),
         StepOut(
-            kind="move_labware",
+            kind="load_instrument",
+            instrument_id="inst",
             labware_id="plate",
-            to_slot="5",
-            label=f"Move plate → {gap.instrument}",
+            label=f"Robot arm → load plate into the {lower}",
         ),
-        StepOut(kind="delay", seconds=300, label=f"Run {gap.capability} on the {gap.instrument}"),
-        StepOut(kind="move_labware", labware_id="plate", to_slot="3", label="Return plate → deck"),
+        StepOut(
+            kind="run_instrument",
+            instrument_id="inst",
+            seconds=seconds,
+            rpm=rpm,
+            label=_run_label(inst, seconds, rpm),
+        ),
+        StepOut(
+            kind="unload_instrument",
+            instrument_id="inst",
+            labware_id="plate",
+            label="Robot arm → return plate to the deck",
+        ),
         StepOut(kind="comment", label=f"{cap} result texted back + ingested into memory"),
     ]
     return ProtocolOut(
         id=_uid("gen"),
         name=f"{cap} run",
-        description=f"Prep on-deck, then hand off to the {gap.instrument}",
+        description=(
+            f"Fill every well of the {pdef.display}, then {inst.verb} it for {_human_time(seconds)}"
+        ),
         mode="general",
         platform_label="General lab robot · PyLabRobot",
         liquids=liq,
@@ -2130,79 +2267,122 @@ def _general_scene(request: str, gap: CapabilityGap) -> ProtocolOut:
             pipettes=[_pip("p300_single_gen2", "right")],
             modules=[],
             accessories=[AccessoryOut(kind="gripper", display="Robot arm")],
+            instruments=[
+                InstrumentOut(
+                    id="inst",
+                    kind=cast("InstrumentKindLit", gap.kind),
+                    display=inst.display,
+                    label=inst.display,
+                    side="right",
+                )
+            ],
             labware=[
                 _lw("tips", "tiprack_300", "1"),
                 _lw(
                     "res",
                     "reservoir_12",
                     "2",
-                    label="Buffer",
-                    initial={"A1": WellFillOut(liquid=buffer, volume=12000)},
+                    label="Sample",
+                    initial={"A1": WellFillOut(liquid=sample, volume=12000)},
                 ),
-                _lw(
-                    "plate",
-                    "wellplate_96",
-                    "3",
-                    label="Sample plate",
-                    initial=_all_wells("wellplate_96", sample, 40),
-                ),
-                _lw("station", "wellplate_6", "5", label=gap.instrument),
+                _lw("plate", plate_kind, "3", label=pdef.display),
             ],
         ),
         steps=steps,
         code_lang="PyLabRobot",
         fallback_note=(
-            f"{cap} isn't a native Opentrons deck capability — this scene models a general lab "
-            f"robot (arm + {gap.instrument}). The steps and PyLabRobot script are what such a robot "  # noqa: E501
-            "would run; nothing executes here."
+            f"{cap} isn't a native Opentrons deck capability, so Claymore composed a general "
+            f"lab-robot scene: it fills the {pdef.display} on-deck, a robot arm hands it to the "
+            f"{lower}, and the {lower} runs the {inst.verb}. The scene + PyLabRobot script are "
+            "what such a robot would run; nothing executes here."
         ),
-        code=_pylabrobot_script(request, gap),
+        code=_pylabrobot_script(request, gap, plate_kind, per_well, seconds, rpm),
     )
 
 
-def _pylabrobot_script(request: str, gap: CapabilityGap) -> str:
-    inst = _slug(gap.instrument)
+def _pylabrobot_script(
+    request: str, gap: CapabilityGap, plate_kind: str, per_well: int, seconds: int, rpm: int | None
+) -> str:
+    inst = instrument_def(gap.kind)
+    cls = "Centrifuge" if gap.kind == "centrifuge" else _slug(gap.kind).title().replace("_", "")
+    pdef = LABWARE.get(plate_kind, LABWARE["wellplate_96"])
+    n_wells = pdef.rows * pdef.cols
+    spin_args = f"rpm={rpm}, seconds={seconds}" if rpm else f"seconds={seconds}"
+    if gap.kind == "centrifuge":
+        driver = [
+            "    async def run(self, plate, *, seconds, rpm=3000):",
+            "        await self.open_lid()",
+            "        await self.load(plate)          # robot arm seats the plate in a rotor bucket",
+            "        await self.close_lid()",
+            "        await self.spin(rpm=rpm, seconds=seconds)",
+            "        await self.open_lid()",
+            "        return await self.unload()      # arm returns the plate to the deck",
+            "",
+            "    async def spin(self, *, rpm, seconds):",
+            '        await self._cmd(f"SET_SPEED {rpm}")',
+            '        await self._cmd("START")',
+            "        await asyncio.sleep(seconds)",
+            '        await self._cmd("STOP")',
+            "        await self._wait_for_rotor_stop()",
+        ]
+    else:
+        driver = [
+            "    async def run(self, plate, *, seconds, **params):",
+            "        await self.load(plate)",
+            f'        await self._cmd("RUN", seconds=seconds, **params)  # {inst.verb} the plate',
+            "        return await self.unload()",
+        ]
     return (
         "\n".join(
             [
-                '"""Generated by Claymore — a general lab-robot plan (not Opentrons).',
-                f"Request: {request.strip()[:100]}",
-                "Runs on any PyLabRobot-supported deck; the off-deck step drives an external instrument.",  # noqa: E501
+                '"""Generated by Claymore — a general lab-robot plan (off the Opentrons deck).',
+                f"Request: {request.strip()[:110]}",
+                f"Prep the plate on-deck, then a robot arm hands it to the {inst.display.lower()}.",
+                "Runs on any PyLabRobot-supported deck; the off-deck step drives the instrument over its API.",  # noqa: E501
                 '"""',
                 "import asyncio",
                 "",
                 "from pylabrobot.liquid_handling import LiquidHandler",
                 "from pylabrobot.liquid_handling.backends import ChatterboxBackend",
-                "from pylabrobot.resources import Deck, Cos_96_wellplate_360ul, HTF_L",
+                "from pylabrobot.resources import Deck, HTF_L, Cor_12_reservoir",
+                "from pylabrobot.resources.corning import Cor_96_wellplate_360ul",
+                "",
+                f"FILL_UL = {per_well}",
                 "",
                 "",
-                "async def main():",
+                "async def main() -> None:",
                 "    lh = LiquidHandler(backend=ChatterboxBackend(), deck=Deck())",
                 "    await lh.setup()",
                 "",
                 '    tips = HTF_L(name="tips")',
-                '    plate = Cos_96_wellplate_360ul(name="sample_plate")',
+                '    plate = Cor_96_wellplate_360ul(name="sample_plate")',
+                '    reservoir = Cor_12_reservoir(name="reservoir")',
                 "    lh.deck.assign_child_resource(tips, location=(0, 0, 0))",
-                "    lh.deck.assign_child_resource(plate, location=(150, 0, 0))",
+                "    lh.deck.assign_child_resource(reservoir, location=(150, 0, 0))",
+                "    lh.deck.assign_child_resource(plate, location=(300, 0, 0))",
                 "",
-                "    # 1) prep the samples on-deck",
-                '    await lh.pick_up_tips(tips["A1:H1"])',
-                "    for col in range(6):",
-                '        await lh.aspirate(plate[f"A{col + 1}"], vols=[100])',
-                '        await lh.dispense(plate[f"A{col + 1}"], vols=[100])',
-                '    await lh.drop_tips(tips["A1:H1"])',
+                f"    # 1) fill every one of the plate's {n_wells} wells",
+                '    await lh.pick_up_tips(tips["A1"])',
+                "    for well in plate.get_all_items():",
+                '        await lh.aspirate(reservoir["A1"], vols=[FILL_UL])',
+                "        await lh.dispense(well, vols=[FILL_UL])",
+                '    await lh.drop_tips(tips["A1"])',
                 "",
-                f"    # 2) hand the plate to the {gap.instrument} ({gap.capability})",
-                f"    await {inst}_run(plate)",
+                f"    # 2) hand the plate to the {inst.display.lower()} and run it",
+                f"    await {cls}().run(plate, {spin_args})",
                 "",
                 "    await lh.stop()",
                 "",
                 "",
-                f"async def {inst}_run(plate):",
-                f'    """Drive the {gap.instrument} over its own API, then return the plate to the deck.',  # noqa: E501
-                f'    Claymore texts the {gap.capability} result back and ingests it into memory."""',  # noqa: E501
-                "    # e.g. instrument.load(plate); await instrument.run(); result = instrument.read()",  # noqa: E501
-                "    await asyncio.sleep(0)  # placeholder for the vendor call",
+                f"class {cls}:",
+                f'    """Thin async driver over the {inst.display.lower()}\'s vendor API.',
+                "",
+                f'    Claymore texts the {inst.capability} result back and ingests it into memory."""',  # noqa: E501
+                "",
+                *driver,
+                "",
+                "    async def _cmd(self, *args, **kwargs):",
+                "        await asyncio.sleep(0)  # vendor serial/HTTP call goes here",
                 "",
                 "",
                 'if __name__ == "__main__":',

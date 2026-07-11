@@ -46,7 +46,28 @@ _REASONING: dict[str, tuple[int, int]] = {
     "high": (8, 3072),
 }
 
+# Settings fields holding a live secret (the user's own pasted keys). These are masked on any read
+# that leaves the process (see :func:`redact_settings`) so the raw key is never sent to the browser
+# client — it only needs to *write* a key, never read one back.
+_SECRET_SETTINGS = ("anthropicApiKey", "voyageApiKey")
+# Placeholder returned in place of a stored secret. A write carrying this exact value is treated as
+# "unchanged" (the client is echoing back the mask it was shown), so a redacted round-trip through
+# the Settings panel never overwrites the real key. It can't collide with a real key (those are
+# ``sk-ant-``/``pa-`` prefixed), and clearing a key still works (send an empty string).
+MASKED_SECRET = "••••••••••••"  # noqa: S105
+
 _lock = threading.Lock()
+
+
+def redact_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a settings dict with every stored secret replaced by :data:`MASKED_SECRET` (empty
+    fields stay empty). Use this on anything sent to the client so the raw keys never leave the
+    server."""
+    out = dict(settings)
+    for field in _SECRET_SETTINGS:
+        if out.get(field):
+            out[field] = MASKED_SECRET
+    return out
 
 
 def local_dir() -> Path:
@@ -225,6 +246,10 @@ def update_settings(patch: dict[str, Any]) -> dict[str, Any]:
             if key not in allowed:
                 continue
             if key == "reasoningLevel" and value not in _REASONING:
+                continue
+            # The client is shown MASKED_SECRET for a stored key; echoing it back means "unchanged",
+            # so never overwrite the real key with the mask. A new key / empty string still apply.
+            if key in _SECRET_SETTINGS and value == MASKED_SECRET:
                 continue
             doc["settings"][key] = value
 

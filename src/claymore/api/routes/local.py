@@ -1,16 +1,19 @@
 """Local-store endpoints — the web dashboard's ``keep-it-local`` persistence surface.
 
 ``/api/local/*`` reads and writes the single-user on-disk document in ``local_store`` (chats,
-settings, profile, metrics, error log). Unlike ``/api/ask`` and ``/api/agent`` these are **not**
-gated on ``WEB_API_ENABLED`` or a model key — they touch only the user's own folder, hold no lab
-IP, and run no model. They exist so the sidebar's Recent chats, the Settings panel (profile,
-API keys, reasoning level, debug), the usage/metrics view and the error log all persist across
-refreshes without a database. If the backend isn't running the web client falls back to
-``localStorage`` (see ``web/src/lib/local.ts``), so these are a convenience, never a hard dep.
+settings, profile, metrics, error log). They exist so the sidebar's Recent chats, the Settings
+panel (profile, API keys, reasoning level, debug), the usage/metrics view and the error log all
+persist across refreshes without a database. If the backend isn't running the web client falls
+back to ``localStorage`` (see ``web/src/lib/local.ts``), so these are a convenience, never a hard
+dep. They touch only the user's own folder, hold no lab IP, and run no model.
 
-Security note: these routes can read/write the Anthropic key the user pastes into Settings. That
-key lives only in ``~/.claymore/local.json`` (git-ignored) and is used solely to build the live
-Composer's Anthropic client server-side — it is never logged and never sent to any other host.
+Security note: these routes read/write the Anthropic + Voyage keys the user pastes into Settings.
+Those keys live only in ``~/.claymore/local.json`` (git-ignored) and build the live Composer's
+client server-side — never logged, never sent to another host. Two guards keep them from leaking
+over the port: (1) the router is behind the loopback-or-token web-auth gate (``api/security.py``),
+so a non-loopback caller without ``WEB_API_TOKEN`` is refused; (2) every read masks the stored keys
+(``local_store.redact_settings``), so a raw secret is never sent to the client even locally — the
+UI only writes a key, never reads one back.
 """
 
 from __future__ import annotations
@@ -40,8 +43,13 @@ class ErrorIn(BaseModel):
 
 @router.get("/state")
 async def get_state() -> dict[str, Any]:
-    """Full local state — profile, settings, metrics, error log, and chat summaries."""
+    """Full local state — profile, settings, metrics, error log, and chat summaries.
+
+    Stored API keys are masked (the client writes keys, never needs to read them back), so a raw
+    secret is never sent over the wire even to a same-machine caller."""
     state = local_store.get_state()
+    if isinstance(state.get("settings"), dict):
+        state["settings"] = local_store.redact_settings(state["settings"])
     state["meta"] = {"path": str(local_store.local_path())}
     return state
 
@@ -78,7 +86,7 @@ async def clear_chats() -> dict[str, str]:
 
 @router.patch("/settings")
 async def patch_settings(patch: JsonBody) -> dict[str, Any]:
-    return local_store.update_settings(patch)
+    return local_store.redact_settings(local_store.update_settings(patch))
 
 
 @router.patch("/profile")

@@ -62,9 +62,9 @@ This is the risk that matters most. Three layers of defense:
 
 ---
 
-## R5 — Base is a deliberate Shepherd replica (reframed: not a risk)
+## R5 — Base overlaps an existing product category (reframed: not a risk)
 
-No mitigation needed — replicating the base is the plan. Put originality into the bio layer (ontology, provenance-for-reproducibility, execution). One guard: keep the `Episode` schema + ontology vendor-neutral so the base plumbing stays swappable (feeds R9).
+No mitigation needed — building the base fully is the plan. Put originality into the bio layer (ontology, provenance-for-reproducibility, execution). One guard: keep the `Episode` schema + ontology vendor-neutral so the base plumbing stays swappable (feeds R9).
 
 ---
 
@@ -100,7 +100,7 @@ No mitigation needed — replicating the base is the plan. Put originality into 
 
 **Approach: treat Granola as a paid-tier connector; keep the SMS/Telegram spine; deprioritize iMessage.**
 - Granola: official REST API needs the **Business plan** ($14/user/mo) for the personal API. Budget for it; it's the only clean path (don't reverse-engineer the local cache). MCP server is an alternative ingestion route.
-- iMessage: no official API. Only via a Mac bridge (BlueBubbles) or a paid vendor (Sendblue/Loop), Apple-ToS gray zone. **Do not build the core on it.** SMS (Twilio) + Telegram cover the interface universally. Revisit iMessage only as a nice-to-have for the Shepherd-like feel, per-lab opt-in.
+- iMessage: no official API. Only via a Mac bridge (BlueBubbles) or a paid vendor (Sendblue/Loop), Apple-ToS gray zone. **Do not build the core on it.** SMS (Twilio) + Telegram cover the interface universally. Revisit iMessage only as a nice-to-have for the polished-messaging feel, per-lab opt-in.
 
 **Definition of done:** Granola connector works against the real API on a Business account; nothing critical depends on iMessage.
 

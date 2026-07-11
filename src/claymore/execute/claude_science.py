@@ -1,9 +1,9 @@
-"""[Bio, Phase 3] Drive Anthropic's **Claude Science** workbench via its local HTTP API.
+"""[Bio, Phase 3] Drive a locally-running **Claude Science** daemon over its local HTTP API.
 
-Claude Science ships as a supervised app with **no headless SDK**, but its daemon (default
-``http://localhost:8765``) exposes an authenticated HTTP API: create a run inside a project, then
-poll the resulting **frame** for status + result. Claymore drives it over that API — no browser and
-no computer-use vision loop. This is faster, deterministic, and needs no display.
+Claymore submits a task to the Claude Science daemon running on this machine (default
+``http://localhost:8765``): create a run inside a project, then poll the resulting **frame** for
+status + result. It talks to the daemon's local HTTP API only — no browser and no computer-use
+vision loop, so it is faster, deterministic, and needs no display.
 
 **Containment — "the agent never escapes the local host" (CLAUDE.md rule 7 + standing constraint).**
 The client is HARD-PINNED to a loopback origin: a non-loopback ``claude_science_url`` is refused
@@ -12,9 +12,9 @@ that would leave loopback. So Claymore's blast radius is exactly one local daemo
 another host. Claude Science runs its own science agents (which may execute code) inside **its own**
 sandbox; that is CS's concern, out of scope here — Claymore only submits a task and reads results.
 
-**Auth.** The daemon logs a browser tab in with a one-time nonce (``claude-science url``). Claymore
-mints one via the CLI, exchanges it for a session cookie, and reuses that cookie for the run.
-State-changing POSTs also carry the daemon's ``Origin`` + ``x-operon-csrf`` anti-CSRF headers.
+**Auth.** Claymore obtains a local session for the daemon (a one-time login token minted via the
+CLI, exchanged for a session cookie) and reuses it for the run; state-changing requests carry the
+daemon's required same-origin + anti-CSRF headers.
 
 **Two modes, chosen automatically, behind one async generator** (:func:`run_science_session`):
 
@@ -391,8 +391,8 @@ async def _run_api(
 
 
 async def _authenticate(client: httpx.AsyncClient, settings: Settings) -> None:
-    """Establish a daemon session: mint a one-time nonce via the CLI, exchange it for the
-    ``operon_auth`` cookie (kept in the client's jar), and confirm it took."""
+    """Establish a daemon session: mint a one-time login token via the CLI, exchange it for the
+    session cookie (kept in the client's jar), and confirm it took."""
     nonce = await _mint_nonce(settings)
     # GET /?nonce seeds the CSRF cookie; POST /api/auth/nonce sets the session cookie.
     await client.get("/", params={"nonce": nonce})

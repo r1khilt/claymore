@@ -49,3 +49,19 @@ def _hermetic_env() -> Iterator[None]:
     config.get_settings.cache_clear()
     config.get_settings()  # pin the cached instance to pure defaults
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_runtime() -> Iterator[None]:
+    """Isolate the module-global agent runtime between tests.
+
+    ``agent._runtime`` is a process-wide singleton: a test that installs a real, graph-backed
+    runtime (e.g. via the app lifespan when keys are configured, or ``set_runtime``) would otherwise
+    leak it into a later test whose ``get_runtime()`` then hits the real FalkorDB driver — an
+    order-dependent failure. Reset to unset after each test so the next one starts from the lazily
+    built in-memory default unless it installs its own.
+    """
+    yield
+    from claymore import agent
+
+    agent._runtime = None

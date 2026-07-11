@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from claymore import __version__, agent
 from claymore.api.routes.admin import router as admin_router
@@ -21,6 +21,7 @@ from claymore.api.routes.local import router as local_router
 from claymore.api.routes.telegram import router as telegram_router
 from claymore.api.routes.whatsapp import router as whatsapp_router
 from claymore.api.runtime import build_runtime
+from claymore.api.security import require_web_auth
 from claymore.config import get_settings
 from claymore.logging import configure_logging, get_logger
 
@@ -51,13 +52,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Claymore", version=__version__, lifespan=lifespan)
+# The web-dashboard surface answers as one demo identity with no per-message channel auth, so it is
+# guarded by the loopback-or-token dependency (api/security.py): loopback-only when WEB_API_TOKEN is
+# unset, bearer-token-required when it is. Telegram/WhatsApp/admin keep their own stronger auth.
+web_auth = [Depends(require_web_auth)]
 app.include_router(whatsapp_router)
 app.include_router(telegram_router)
 app.include_router(admin_router)
-app.include_router(ask_router)  # POST /api/ask (web dashboard; gated by WEB_API_ENABLED)
-app.include_router(agent_router)  # POST /api/agent (Composer SSE; gated by WEB_API_ENABLED + key)
+app.include_router(ask_router, dependencies=web_auth)  # POST /api/ask (WEB_API_ENABLED + web auth)
+app.include_router(agent_router, dependencies=web_auth)  # POST /api/agent (Composer SSE; + auth)
 app.include_router(connectors_router)  # /api/connectors/* (Composio OAuth + durable sync)
-app.include_router(local_router)  # /api/local/* (chats/settings/metrics; local file, ungated)
+app.include_router(local_router, dependencies=web_auth)  # /api/local/* (chats/settings; + auth)
 
 
 @app.get("/healthz")

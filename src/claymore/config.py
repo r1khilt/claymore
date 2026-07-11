@@ -106,6 +106,20 @@ class Settings(BaseSettings):
     claude_science_run_timeout_s: float = 900.0
     """Max seconds Claymore waits for a Claude Science run before giving up (the run keeps going
     server-side; Claymore just stops waiting and returns an honest 'still running' result)."""
+    claude_science_allowed_domains: str = (
+        "figshare.com,zenodo.org,datadryad.org,osf.io,dryad.org,cern.ch,"
+        "nih.gov,ncbi.nlm.nih.gov,ebi.ac.uk,ensembl.org,uniprot.org,rcsb.org,wwpdb.org,pdbe.org,"
+        "biorxiv.org,medrxiv.org,arxiv.org,europepmc.org,ncbi.nlm.nih.gov,"
+        "reactome.org,kegg.jp,string-db.org,proteinatlas.org,genome.ucsc.edu,ucsc.edu,"
+        "github.com,githubusercontent.com,huggingface.co,addgene.org,pypi.org,files.pythonhosted.org"
+    )
+    """Comma-separated allowlist of domains a Claude Science run MAY reach for the outside world
+    (dataset downloads, doc/DB lookups). Egress is deny-by-default (CLAUDE.md rule 7): the run's
+    external-network requests are auto-approved ONLY when the target host matches one of these base
+    domains (or a subdomain of one), and denied otherwise — so a run can pull public data but can't
+    exfiltrate to an arbitrary host. Set to empty to restore deny-all egress; extend per lab. A
+    match is exact host or a dot-boundary subdomain (``api.figshare.com`` matches ``figshare.com``;
+    ``figshare.com.evil.com`` does not)."""
 
     # --- cost / behavior knobs (R6) ---
     extraction_model: str = "claude-haiku-4-5-20251001"

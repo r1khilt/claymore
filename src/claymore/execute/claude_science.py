@@ -38,6 +38,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel
@@ -105,6 +106,11 @@ _MAX_CHILD_FRAMES = 8  # sub-agent frames we'll fetch to find figures they produ
 # authoritative source of a run's visual output — figures live here, NOT inline in the frame JSON.
 _FRAME_ARTIFACTS_EP = "/api/frames/{frame_id}/artifacts"
 _ARTIFACT_EP = "/api/artifacts/{artifact_id}"
+# The daemon's persistent user allowlist (verified against the live app). A network request to a
+# host that isn't on this list (nor the daemon's built-in pkg/git allowlist) is blocked; a single
+# per-call approval is refused ("approve with the 'Always' scope"). Claymore adds an our-allowlisted
+# host here so the run can fetch it. The daemon keeps a ``deniedDomains`` blocklist as a backstop.
+_ALLOWED_DOMAINS_EP = "/api/preferences/allowed-domains"
 
 
 class _ScienceUnavailable(Exception):
@@ -318,6 +324,7 @@ async def _run_api(
 
         last_desc: str | None = None
         resolved: set[str] = set()
+        allowed_domains = _parse_allowed_domains(settings.claude_science_allowed_domains)
         elapsed = 0.0
         frame: dict[str, Any] = {}
         while True:
@@ -326,11 +333,11 @@ async def _run_api(
 
             # Answer any gate the run parks on so it proceeds unattended (see _resolve_pending):
             # a question -> let Claude Science's agent decide; on-host code execution -> allow;
-            # an external install/data/egress gate -> deny, keeping the whole run on localhost.
+            # external network -> allow only to an allowlisted data/reference domain, else deny.
             pending = _pending_requests(frame)
             fresh = [p for p in pending if _stable_key(p) and _stable_key(p) not in resolved]
             if fresh:
-                res = await _resolve_pending(client, url, frame_id, fresh)
+                res = await _resolve_pending(client, url, frame_id, fresh, allowed_domains)
                 resolved.update(res.keys)
                 if res.answered:
                     yield step(
@@ -340,6 +347,16 @@ async def _run_api(
                     )
                 if res.allowed:
                     yield step("gate", f"Approved {res.allowed} on-host code-execution step(s)")
+                if res.net_allowed:
+                    yield step(
+                        "gate", f"Allowed network access to {_clip(', '.join(res.net_allowed), 60)}"
+                    )
+                if res.net_denied:
+                    yield step(
+                        "gate",
+                        f"Declined network access to {_clip(', '.join(res.net_denied), 50)} "
+                        "(not on the allowlist)",
+                    )
                 if res.denied:
                     yield step(
                         "gate",
@@ -468,22 +485,49 @@ class _Resolution(BaseModel):
 
     keys: list[str] = []
     answered: int = 0
-    allowed: int = 0
-    denied: int = 0
+    allowed: int = 0  # on-host code-execution steps approved
+    denied: int = 0  # non-network egress refused (installs off-host, contact-email, etc.)
+    net_allowed: list[str] = []  # external domains granted (on the allowlist)
+    net_denied: list[str] = []  # external domains refused (off the allowlist)
+
+
+async def _add_allowed_domain(client: httpx.AsyncClient, url: str, domain: str) -> bool:
+    """Add ``domain`` to the daemon's persistent user allowlist so the run may fetch it. This is the
+    'Always'-scope grant the daemon requires for network access (a single-call approval is refused).
+    Only hosts that already passed Claymore's own allowlist reach here. Best-effort: returns whether
+    the daemon accepted it; failure just leaves that fetch blocked, never a crash."""
+    if not domain:
+        return False
+    try:
+        resp = await client.post(
+            _ALLOWED_DOMAINS_EP, json={"domain": domain}, headers=_write_headers(client, url)
+        )
+    except Exception as exc:
+        _log.warning("claude_science.add_domain_failed", domain=domain, error=str(exc)[:120])
+        return False
+    return resp.status_code == 200
 
 
 async def _resolve_pending(
-    client: httpx.AsyncClient, url: str, frame_id: str, pending: list[dict[str, Any]]
+    client: httpx.AsyncClient,
+    url: str,
+    frame_id: str,
+    pending: list[dict[str, Any]],
+    allowed_domains: frozenset[str],
 ) -> _Resolution:
-    """Answer each pending gate so the run proceeds unattended, per Claymore's policy (which encodes
-    the user's two standing rules — "let Claude Science execute code" and "don't escape localhost"):
+    """Answer each pending gate so the run proceeds unattended, per Claymore's policy:
 
     * ``kind == "ask"`` (an interactive question) → ``decide_for_me``: hand the choice back to
       Claude Science's own agent (its recommended path). We never guess a scientific choice.
     * ``kind`` starting ``local_`` (on-host sandbox code execution, e.g. ``local_exec``) →
       ``allow``: this IS "let it execute code", and it never leaves the machine.
-    * anything else (external package install / data download / contact-email egress) → ``deny``:
-      keep the whole run on localhost.
+    * ``kind == "network"`` (external egress to a ``target`` host) → when the host is on
+      ``allowed_domains`` (reputable public data/reference sources), Claymore **adds it to the
+      daemon's persistent allowlist** (:func:`_add_allowed_domain`) — a per-call resolve is refused
+      for network ("cannot be granted for a single call; approve with the 'Always' scope"), so the
+      grant must be the persistent kind. Off-allowlist → ``deny``. Deny-by-default holds (rule 7),
+      and the daemon keeps its own ``deniedDomains`` blocklist (paste/exfil hosts) as a backstop.
+    * anything else (off-host package install, contact-email egress, ...) → ``deny``.
 
     Parked requests are addressed by ``tool_id`` (``requestId`` is rejected once a request parks);
     live ones by ``requestId``.
@@ -491,17 +535,32 @@ async def _resolve_pending(
     responses: list[dict[str, Any]] = []
     out = _Resolution()
     for req in pending:
-        response, category = _pending_response(req)
+        response, category = _pending_response(req, allowed_domains)
         if response is None:
             continue
-        responses.append(response)
         out.keys.append(_stable_key(req))
         if category == "ask":
             out.answered += 1
+            responses.append(response)
         elif category == "allow":
             out.allowed += 1
+            responses.append(response)
+        elif category == "allow_net":
+            # Grant persistently by adding the host to the daemon's allowlist (the "Always" scope);
+            # the run's fetch then succeeds. Also answer the parked request so the current call
+            # unblocks. Only hosts that passed our own allowlist reach here.
+            domain = _host_of(str(req.get("target") or ""))
+            granted = await _add_allowed_domain(client, url, domain)
+            (out.net_allowed if granted else out.net_denied).append(domain or "?")
+            _log.info("claude_science.network_grant", domain=domain, granted=granted)
+            responses.append(response)
+        elif category == "deny_net":
+            out.net_denied.append(_host_of(str(req.get("target") or "")) or "?")
+            _log.info("claude_science.network_denied", domain=req.get("target"))
+            responses.append(response)
         else:
             out.denied += 1
+            responses.append(response)
     if not responses:
         return out
     body = {"responses": responses, "ultra_mode": True, "target_agent": _ROOT_AGENT}
@@ -515,13 +574,64 @@ async def _resolve_pending(
     return out
 
 
-def _pending_response(req: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+def _parse_allowed_domains(raw: str) -> frozenset[str]:
+    """Parse the comma-separated ``claude_science_allowed_domains`` setting into a normalized set of
+    base domains (lowercased, ``www.`` stripped, blanks dropped). A bare single label (a TLD like
+    ``com``, or ``localhost``) is rejected — it would wildcard-match every host under it, so every
+    allowlist entry must have a dot."""
+    out: set[str] = set()
+    for part in (raw or "").split(","):
+        host = part.strip().lower().strip(".")
+        if host.startswith("www."):
+            host = host[4:]
+        # Require a dot AND that the host is a clean domain (no scheme/path/space slipped in).
+        if host and "." in host and re.fullmatch(r"[a-z0-9.-]+", host):
+            out.add(host)
+    return frozenset(out)
+
+
+def _host_of(target: str) -> str:
+    """Reduce a network ``target`` to a bare lowercased host, parsed with a real RFC-3986 URL parser
+    so it matches what the fetching client resolves — closing the parser-differential bypass where
+    ``evil.com#@figshare.com`` (fragment/query/userinfo tricks) would otherwise reduce to an
+    allowlisted label. Returns "" for anything that isn't a plain domain (an IP, an injection
+    artifact, unicode), which the caller then treats as not-allowed."""
+    t = target.strip().lower()
+    if not t:
+        return ""
+    # Parse the authority as a URL; prefix "//" for a bare "host[:port][/path]" so urlsplit reads
+    # the authority (not a path). .hostname applies RFC-3986 rules (fragment/query/userinfo/port).
+    try:
+        host = urlsplit(t if "://" in t else "//" + t).hostname or ""
+    except ValueError:
+        return ""
+    host = host.rstrip(".")
+    # A legitimate allowlistable host is only letters/digits/dots/hyphens with a dot. Anything else
+    # (an IP, a bracketed IPv6, a unicode/IDN homograph, a stray parse artifact) -> reject.
+    if not host or "." not in host or not re.fullmatch(r"[a-z0-9.-]+", host):
+        return ""
+    return host
+
+
+def _domain_allowed(target: str, allowed_domains: frozenset[str]) -> bool:
+    """True iff the ``target`` host is an allowlisted domain or a dot-boundary subdomain of one.
+    ``api.figshare.com`` matches ``figshare.com``; ``figshare.com.evil.com`` does not."""
+    host = _host_of(target)
+    if not host or not allowed_domains:
+        return False
+    return any(host == d or host.endswith("." + d) for d in allowed_domains)
+
+
+def _pending_response(
+    req: dict[str, Any], allowed_domains: frozenset[str]
+) -> tuple[dict[str, Any] | None, str]:
     """The resolve-input response for one pending request, plus a category label
-    (``ask`` | ``allow`` | ``deny`` | ``skip``). Pure (no I/O) so the policy is unit-testable.
+    (``ask`` | ``allow`` | ``allow_net`` | ``deny_net`` | ``deny`` | ``skip``). Pure (no I/O) so the
+    policy is unit-testable.
 
     Policy: a question -> ``decide_for_me``; on-host code execution (``local_*``) -> ``allow``;
-    everything else (external install/data/egress) -> ``deny``. A request with no addressable id is
-    skipped (``None``)."""
+    external network to an allowlisted domain -> ``allow`` (``allow_net``), off-allowlist ->
+    ``deny`` (``deny_net``); everything else -> ``deny``. No addressable id -> skipped."""
     ref_key, ref_val = _pending_ref(req)
     if not ref_val:
         return None, "skip"
@@ -530,6 +640,10 @@ def _pending_response(req: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         return {ref_key: ref_val, "answers": {}, "action": "decide_for_me"}, "ask"
     if kind.startswith("local_"):
         return {ref_key: ref_val, "approved": True, "action": "allow"}, "allow"
+    if kind == "network":
+        if _domain_allowed(str(req.get("target") or ""), allowed_domains):
+            return {ref_key: ref_val, "approved": True, "action": "allow"}, "allow_net"
+        return {ref_key: ref_val, "approved": False, "action": "deny"}, "deny_net"
     return {ref_key: ref_val, "approved": False, "action": "deny"}, "deny"
 
 
@@ -585,6 +699,55 @@ def _badge(desc: str) -> str:
     return _clip(head.strip() or "Working", 22)
 
 
+_MAX_ANSWER_CHARS = 16_000  # cap the result summary; a real answer + tables fits well under this
+
+
+def _message_text(msg: dict[str, Any]) -> str:
+    """The prose of one conversation message — its ``text`` content blocks joined."""
+    blocks = msg.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    parts = [
+        b["text"]
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+    ]
+    return "\n".join(parts).strip()
+
+
+def _final_answer(frame: dict[str, Any]) -> str:
+    """The run's full analytical answer. ``output_data.response`` is only the LAST assistant
+    utterance — after a review/audit cycle that's a short *correction*, not the comprehensive result
+    (the numbers/tables/conclusion). So rebuild the answer from the conversation: the substantive
+    assistant message (the longest prose the coordinator wrote), plus any assistant messages that
+    follow it (e.g. a reviewer correction) and the daemon's own ``response`` — so nothing is dropped
+    and the numbers always survive. Falls back to ``response`` / ``status_description`` when there
+    are no messages (older daemons)."""
+    ctx = frame.get("context_data")
+    msgs = ctx.get("_messages") if isinstance(ctx, dict) else None
+    out = frame.get("output_data")
+    response = (out.get("response") or "").strip() if isinstance(out, dict) else ""
+
+    texts: list[str] = []
+    if isinstance(msgs, list):
+        for m in msgs:
+            if isinstance(m, dict) and str(m.get("role")) == "assistant":
+                text = _message_text(m)
+                if text:
+                    texts.append(text)
+    if not texts:
+        return response or str(frame.get("status_description") or "").strip()
+
+    primary_idx = max(range(len(texts)), key=lambda i: len(texts[i]))  # the comprehensive answer
+    parts = [texts[primary_idx]]
+    for extra in texts[primary_idx + 1 :]:  # corrections/addenda that came after it
+        if extra and extra not in parts[0]:
+            parts.append(extra)
+    if response and all(response not in p for p in parts):  # belt: keep the daemon's own response
+        parts.append(response)
+    return "\n\n".join(parts)[:_MAX_ANSWER_CHARS]
+
+
 def _api_session(
     task: str,
     url: str,
@@ -597,8 +760,7 @@ def _api_session(
     """Build the terminal session from a finished frame — completed only if the run actually
     completed; otherwise a labelled error (never a fabricated success)."""
     ok = str(frame.get("status") or "").lower() in _TERMINAL_OK
-    out = frame.get("output_data")
-    response = (out.get("response") or "").strip() if isinstance(out, dict) else ""
+    response = _final_answer(frame)
     summary = response or str(frame.get("status_description") or "").strip()
     if not summary:
         summary = (

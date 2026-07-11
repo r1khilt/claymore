@@ -234,43 +234,194 @@ def test_pure_helpers() -> None:
 def test_pending_request_policy() -> None:
     from claymore.execute.claude_science import _pending_response, _stable_key
 
+    allow = frozenset({"figshare.com", "ncbi.nlm.nih.gov"})
+
     # An interactive question -> decide_for_me (delegate to Claude Science's own agent).
     ask = {"kind": "ask", "requestId": "r1", "mode": "live"}
-    resp, cat = _pending_response(ask)
+    resp, cat = _pending_response(ask, allow)
     assert cat == "ask"
     assert resp == {"requestId": "r1", "answers": {}, "action": "decide_for_me"}
 
     # On-host code execution -> allow (this is "let it execute code"; never leaves the machine).
     local = {"kind": "local_exec", "tool": "python", "requestId": "r2", "mode": "live"}
-    resp, cat = _pending_response(local)
+    resp, cat = _pending_response(local, allow)
     assert cat == "allow"
     assert resp == {"requestId": "r2", "approved": True, "action": "allow"}
 
     # A pip install is the SAME on-host gate (kind local_exec, tool manage_packages) -> allow, so
     # the agent can install scikit-learn / pytorch / etc. It's the kind, not the tool, that decides.
     install = {"kind": "local_exec", "tool": "manage_packages", "requestId": "r2b", "mode": "live"}
-    _, cat = _pending_response(install)
+    _, cat = _pending_response(install, allow)
     assert cat == "allow"
 
-    # An external gate (install/data/contact-email egress) -> deny (stay on localhost).
-    for external in ({"kind": "network", "requestId": "r3"}, {"kind": "email", "requestId": "r4"}):
-        resp, cat = _pending_response(external)
-        assert cat == "deny"
+    # Network egress to an allowlisted host (incl. a subdomain) -> allow (the enablement).
+    for target in ("figshare.com", "api.figshare.com", "ndownloader.figshare.com"):
+        resp, cat = _pending_response(
+            {"kind": "network", "target": target, "requestId": "n1"}, allow
+        )
+        assert cat == "allow_net", target
+        assert resp == {"requestId": "n1", "approved": True, "action": "allow"}
+
+    # Network egress off the allowlist -> deny (incl. a look-alike suffix trick and a bare IP).
+    for target in ("evil.example", "figshare.com.evil.com", "notfigshare.com", "10.0.0.5"):
+        resp, cat = _pending_response(
+            {"kind": "network", "target": target, "requestId": "n2"}, allow
+        )
+        assert cat == "deny_net", target
         assert resp is not None and resp["action"] == "deny" and resp["approved"] is False
+
+    # A non-network egress (contact-email) -> deny outright.
+    resp, cat = _pending_response({"kind": "email", "requestId": "r4"}, allow)
+    assert cat == "deny"
+    assert resp is not None and resp["action"] == "deny" and resp["approved"] is False
+
+    # Empty allowlist -> deny-all egress restored (even an otherwise-reputable host).
+    _, cat = _pending_response(
+        {"kind": "network", "target": "figshare.com", "requestId": "n3"}, frozenset()
+    )
+    assert cat == "deny_net"
 
     # A parked request must be addressed by tool_id (requestId is live-only once parked).
     parked = {"kind": "ask", "requestId": "r5", "tool_id": "toolu_9", "mode": "parked"}
-    resp, _ = _pending_response(parked)
+    resp, _ = _pending_response(parked, allow)
     assert resp is not None and resp.get("tool_id") == "toolu_9" and "requestId" not in resp
 
     # A live local_exec uses requestId; tool_id is the stable dedup key across live->parked.
-    resp, _ = _pending_response(local)
+    resp, _ = _pending_response(local, allow)
     assert resp is not None and "requestId" in resp
     assert _stable_key(local) == "r2"  # no tool_id here, falls back to requestId
     assert _stable_key(parked) == "toolu_9"  # tool_id is preferred (stable across parking)
 
     # No addressable id -> skipped.
-    assert _pending_response({"kind": "ask"}) == (None, "skip")
+    assert _pending_response({"kind": "ask"}, allow) == (None, "skip")
+
+
+def test_domain_allowlist_matching() -> None:
+    """Egress allowlisting: exact host + dot-boundary subdomains pass; look-alikes, off-list hosts,
+    bare IPs, and an empty allowlist are refused. Host parsing tolerates scheme/port/path."""
+    from claymore.execute.claude_science import _domain_allowed, _host_of, _parse_allowed_domains
+
+    allow = _parse_allowed_domains("Figshare.com, www.ncbi.nlm.nih.gov , ,.zenodo.org")
+    assert allow == frozenset({"figshare.com", "ncbi.nlm.nih.gov", "zenodo.org"})
+    # A bare TLD / single label would wildcard-match everything -> rejected from the allowlist.
+    assert _parse_allowed_domains("com, localhost, evil, figshare.com") == frozenset(
+        {"figshare.com"}
+    )
+
+    assert _host_of("https://api.figshare.com/v2/x?y=1") == "api.figshare.com"
+    assert _host_of("ndownloader.figshare.com:443") == "ndownloader.figshare.com"
+    assert _host_of("USER@Figshare.com") == "figshare.com"
+
+    for good in (
+        "figshare.com",
+        "api.figshare.com",
+        "https://ndownloader.figshare.com/f/1",
+        "zenodo.org",
+    ):
+        assert _domain_allowed(good, allow), good
+    for bad in (
+        "figshare.com.evil.com",
+        "notfigshare.com",
+        "evil.com",
+        "127.0.0.1",
+        "",
+        "localhost",
+    ):
+        assert not _domain_allowed(bad, allow), bad
+    assert not _domain_allowed("figshare.com", frozenset())  # empty allowlist denies everything
+
+    # Parser-differential bypass (CONFIRMED critical): a fragment/query/userinfo trick must NOT
+    # reduce an attacker host to an allowlisted label — the RFC host is the attacker's, so deny.
+    for evil in (
+        "evil.com#@figshare.com",
+        "http://evil.com#@figshare.com",
+        "http://evil.com?@figshare.com",
+        "169.254.169.254#@figshare.com",  # cloud-metadata SSRF
+        "10.0.0.5#@ncbi.nlm.nih.gov",  # internal host
+        "figshare.com@evil.com",  # classic userinfo trick
+    ):
+        assert not _domain_allowed(evil, allow), evil
+    # The legitimate userinfo-free URL still resolves + is allowed.
+    assert _domain_allowed("https://api.figshare.com:443/v2/articles/1", allow)
+
+
+async def test_resolve_pending_adds_allowlisted_domain_to_daemon() -> None:
+    """A network request for an allowlisted host is granted by ADDING the host to the daemon's
+    persistent allowlist (POST /api/preferences/allowed-domains) — a single-call resolve is refused
+    for network. An off-allowlist host is denied and never added."""
+    posts: list[tuple[str, object]] = []
+
+    class _Client:
+        def __init__(self) -> None:
+            self.cookies = {"operon_csrf": "x"}
+
+        async def post(
+            self, path: str, json: object = None, headers: object = None
+        ) -> httpx.Response:
+            posts.append((path, json))
+            return httpx.Response(200)
+
+    allow = claude_science._parse_allowed_domains("figshare.com")
+    reqs = [
+        {"kind": "network", "target": "api.figshare.com", "tool_id": "t1", "mode": "parked"},
+        {"kind": "network", "target": "evil.example", "tool_id": "t2", "mode": "parked"},
+        {"kind": "local_exec", "requestId": "r3", "mode": "live"},
+    ]
+    out = await claude_science._resolve_pending(
+        _Client(), "http://localhost:8765", "F", reqs, allow
+    )
+
+    # The allowlisted host was added to the daemon's persistent allowlist; the off-list host wasn't.
+    added = [p for p in posts if p[0] == claude_science._ALLOWED_DOMAINS_EP]
+    assert added == [("/api/preferences/allowed-domains", {"domain": "api.figshare.com"})]
+    assert out.net_allowed == ["api.figshare.com"]
+    assert out.net_denied == ["evil.example"]
+    assert out.allowed == 1  # the on-host local_exec
+    # A resolve-input batch was still posted (to answer the parked requests).
+    assert any(p[0].endswith("/resolve-input") for p in posts)
+
+
+def test_final_answer_recovers_full_analysis_not_trailing_correction() -> None:
+    """``output_data.response`` is only the last assistant message; after a review cycle that's a
+    short correction, not the analysis. ``_final_answer`` must recover the full result (numbers +
+    conclusion) AND keep the correction."""
+    from claymore.execute.claude_science import _final_answer
+
+    answer = (
+        "All analysis complete. Pearson r = -0.44, R^2 = 0.196, slope = -0.58 um^3/OD. "
+        "Conclusion: cells shrink as culture density rises."
+    )
+    correction = "Correction: I retract the unverified bioRxiv linkage; the rest stands."
+    frame = {
+        "output_data": {"response": correction},  # daemon's response = the LAST message only
+        "context_data": {
+            "_messages": [
+                {"role": "user", "content": [{"type": "text", "text": "analyze the dataset"}]},
+                {"role": "assistant", "content": [{"type": "tool_use", "name": "python"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+                {"role": "user", "content": [{"type": "text", "text": "[Auditor] found 1 issue"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": correction}]},
+            ]
+        },
+    }
+    result = _final_answer(frame)
+    assert "Pearson r = -0.44" in result and "R^2 = 0.196" in result  # the numbers survive
+    assert "Conclusion" in result
+    assert "retract the unverified bioRxiv linkage" in result  # the correction is kept too
+
+    # A normal run (single answer message == response) returns it once, no duplication.
+    simple = {
+        "output_data": {"response": "The answer."},
+        "context_data": {
+            "_messages": [
+                {"role": "assistant", "content": [{"type": "text", "text": "The answer."}]}
+            ]
+        },
+    }
+    assert _final_answer(simple) == "The answer."
+    # No messages -> fall back to output_data.response; empty frame -> "" (no crash).
+    assert _final_answer({"output_data": {"response": "fallback"}}) == "fallback"
+    assert _final_answer({}) == ""
 
 
 def test_frame_svg_escapes_hostile_input() -> None:

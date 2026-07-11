@@ -41,6 +41,7 @@ import { cn } from '@/lib/utils'
 import { AnswerView } from './AnswerView'
 import { ProtocolCard } from './ProtocolCard'
 import { MLResultCard } from './MLResultCard'
+import { Markdown } from './Markdown'
 
 const TOOL_ICON: Record<ToolName, LucideIcon> = {
   search_memory: Search,
@@ -418,7 +419,9 @@ function ScienceSessionCard({
 
       {session && (
         <div className="px-4 pt-3">
-          <p className="text-[13.5px] leading-relaxed text-ink/80">{session.resultSummary}</p>
+          <div className="text-[13.5px] leading-relaxed text-ink/80">
+            <Markdown text={session.resultSummary} />
+          </div>
           {session.metrics.length > 0 && (
             <div className="mt-3 grid grid-cols-3 gap-2">
               {session.metrics.map((m) => (

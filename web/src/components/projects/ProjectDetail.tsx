@@ -9,7 +9,7 @@
  */
 import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, RotateCcw, Sparkles, Loader2, FileText, GitFork, Play, Check } from 'lucide-react'
+import { ArrowLeft, RotateCcw, Sparkles, Loader2, FileText, GitFork, Play, Check, Maximize2 } from 'lucide-react'
 import type { AgentEvent } from '@/lib/agent'
 import type { Person } from '@/lib/types'
 import type { Gap, GraphEdge, GraphNode, PaperSource, Project } from '@/lib/projectTypes'
@@ -65,6 +65,9 @@ export function ProjectDetail({ project, onBack }: { project: Project; onBack: (
   const [runResult, setRunResult] = useState<GapRunResult | null>(null)
   const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set())
   const [buildToken, setBuildToken] = useState(0)
+  // Bumped by the "Recenter" control to re-engage the graph's auto-fit after the
+  // user has dragged the camera away.
+  const [recenterNonce, setRecenterNonce] = useState(0)
 
   const buildAc = useRef<AbortController | null>(null)
   const runAc = useRef<AbortController | null>(null)
@@ -297,25 +300,70 @@ export function ProjectDetail({ project, onBack }: { project: Project; onBack: (
                       edges={edges}
                       activeNodes={activeNodes}
                       activeEdges={activeEdges}
+                      recenterSignal={recenterNonce}
                       onSelectNode={() => setSelectedGap(null)}
                     />
                   </Suspense>
-                  <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/60 px-2.5 py-1 text-[11.5px] font-medium text-muted backdrop-blur">
-                    <Sparkles className="size-3 text-sage-500" strokeWidth={2} />
-                    {nodes.length} nodes · {edges.length} edges
+
+                  {/* top-left: what's on screen — the whole graph, or a focused gap */}
+                  <div className="pointer-events-none absolute left-4 top-4 flex max-w-[60%] items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/70 px-2.5 py-1 text-[11.5px] font-medium text-muted backdrop-blur">
+                    <Sparkles className="size-3 shrink-0 text-sage-500" strokeWidth={2} />
+                    {selectedGap ? (
+                      <span className="truncate">
+                        Focused · <span className="text-ink">{selectedGap.title}</span>
+                      </span>
+                    ) : (
+                      <span>
+                        {nodes.length} nodes · {edges.length} edges
+                      </span>
+                    )}
                   </div>
-                  {selectedGap && (
-                    <div className="pointer-events-none absolute bottom-4 left-4 right-4 mx-auto max-w-[420px] rounded-xl border border-black/[0.06] bg-white/75 px-3 py-2 text-center text-[12px] text-muted backdrop-blur">
-                      Highlighting <span className="font-medium text-ink">{selectedGap.title}</span> · the bridging
-                      evidence, not magic
-                    </div>
-                  )}
+
+                  {/* top-right: re-fit the camera after a manual drag */}
+                  <button
+                    onClick={() => setRecenterNonce((n) => n + 1)}
+                    title="Recenter"
+                    className="absolute right-4 top-4 flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/70 px-2.5 py-1 text-[11.5px] font-medium text-muted backdrop-blur transition-colors hover:bg-white hover:text-ink"
+                  >
+                    <Maximize2 className="size-3" strokeWidth={2.25} />
+                    Recenter
+                  </button>
+
+                  <GraphLegend />
                 </>
               )}
             </motion.div>
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/** A compact legend for the edge semantics — the states a run flips. Node colour
+ *  encodes entity type (hover a node for detail), so it stays out of the legend. */
+function GraphLegend() {
+  const items = [
+    { label: 'asserted', color: '#5a5b52', dash: false },
+    { label: 'predicted', color: '#c98a3c', dash: true },
+    { label: 'confirmed', color: '#3f7d5c', dash: false },
+    { label: 'conflict', color: '#c65744', dash: false },
+  ]
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-4 flex items-center gap-3 rounded-full border border-black/[0.06] bg-white/70 px-3 py-1.5 text-[11px] text-muted backdrop-blur">
+      {items.map((it) => (
+        <span key={it.label} className="flex items-center gap-1.5">
+          <span
+            className="h-[2px] w-4 shrink-0 rounded-full"
+            style={
+              it.dash
+                ? { backgroundImage: `repeating-linear-gradient(90deg, ${it.color} 0 4px, transparent 4px 7px)` }
+                : { background: it.color }
+            }
+          />
+          {it.label}
+        </span>
+      ))}
     </div>
   )
 }

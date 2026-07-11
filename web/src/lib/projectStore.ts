@@ -53,20 +53,20 @@ export type GraphBuildEvent =
 export async function* buildGraph(project: Project, signal?: AbortSignal): AsyncGenerator<GraphBuildEvent> {
   // --- sufficiency gate ---
   const gate = sufficiencyGate(project.sources)
-  await sleep(360, signal)
+  await sleep(280, signal)
   yield { type: 'sufficiency', have: gate.have, need: gate.need, floor: gate.floor, ok: gate.ok }
 
   let corpus = [...project.sources]
   if (!gate.ok) {
-    await sleep(300, signal)
+    await sleep(220, signal)
     yield { type: 'augment:start' }
     const found = await expandViaExa(corpus, gate.need, signal)
     for (const source of found) {
-      await sleep(430, signal)
+      await sleep(300, signal)
       corpus.push(source)
       yield { type: 'augment:source', source }
     }
-    await sleep(260, signal)
+    await sleep(180, signal)
     yield { type: 'augment:done', added: found.length }
   }
 
@@ -75,36 +75,36 @@ export async function* buildGraph(project: Project, signal?: AbortSignal): Async
   const edges = baseEdges()
 
   // --- per-paper extraction pass ---
-  await sleep(420, signal)
+  await sleep(260, signal)
   for (const p of corpus) {
     const n = nodes.filter((nd) => nd.sources.includes(p.id)).length
-    await sleep(300, signal)
+    await sleep(190, signal)
     yield { type: 'extract:paper', sourceId: p.id, title: p.title, nodes: n }
   }
 
   // --- nodes bloom in ---
-  await sleep(300, signal)
+  await sleep(220, signal)
   for (const node of nodes) {
-    await sleep(70 + (node.kind === 'Protein' || node.kind === 'Gene' ? 60 : 30), signal)
+    await sleep(48 + (node.kind === 'Protein' || node.kind === 'Gene' ? 40 : 20), signal)
     yield { type: 'graph:node', node }
   }
 
   // --- edges connect ---
-  await sleep(200, signal)
+  await sleep(150, signal)
   for (const edge of edges) {
-    await sleep(48, signal)
+    await sleep(34, signal)
     yield { type: 'graph:edge', edge }
   }
 
-  await sleep(260, signal)
+  await sleep(180, signal)
   yield { type: 'graph:settled', nodes: nodes.length, edges: edges.length }
 
   // --- synthesize + find gaps (real gap engine over the streamed graph) ---
-  await sleep(420, signal)
+  await sleep(300, signal)
   yield { type: 'think', text: `Extracted ${nodes.length} entities and ${edges.length} relations across ${corpus.length} papers.` }
-  await sleep(700, signal)
+  await sleep(480, signal)
   yield { type: 'think', text: 'Scanning for open triads, contradicted edges, and predicted links…' }
-  await sleep(650, signal)
+  await sleep(460, signal)
 
   const gaps = findGaps(nodes, edges, CTX)
   // surface the predicted edges the gaps propose (dashed-gold), so they bloom in with the gaps.
@@ -112,11 +112,11 @@ export async function* buildGraph(project: Project, signal?: AbortSignal): Async
   for (const g of gaps) {
     if ((g.kind === 'open_triad' || g.kind === 'link_prediction') && !present.has(g.edge.id)) {
       present.add(g.edge.id)
-      await sleep(120, signal)
+      await sleep(90, signal)
       yield { type: 'graph:edge', edge: g.edge }
     }
   }
-  await sleep(320, signal)
+  await sleep(240, signal)
   yield { type: 'gaps', items: gaps }
   yield { type: 'done' }
 }

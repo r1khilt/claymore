@@ -27,6 +27,8 @@ export interface ConvTurn {
 export interface AgentContext {
   history?: ConvTurn[]
   lastProtocol?: Protocol
+  /** Force a live "ingesting from the connected sources" beat before answering (Proactive route). */
+  ingestFirst?: boolean
   signal?: AbortSignal
 }
 
@@ -575,7 +577,7 @@ export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerat
   const id = () => `t${++n}`
   const q = query.trim()
 
-  const wantsIngest = /\b(ingest|sync|pull in|refresh|latest from)\b/i.test(q)
+  const wantsIngest = !!ctx?.ingestFirst || /\b(ingest|sync|pull in|refresh|latest from)\b/i.test(q)
   const wantsML =
     /\b(hypothesis|dataset|classif|regress|correlat|train (a )?model|ml analysis|was .*(true|right)|does .* predict|predict .* activity|test .* on .* data)\b/i.test(
       q,
@@ -611,13 +613,24 @@ export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerat
     }
   }
 
-  // --- optional ingest step ---
+  // --- optional ingest step: a quick live sweep across the connected sources ---
   if (wantsIngest) {
-    yield { type: 'thought', text: 'Let me sync the latest from the connected sources first.' }
-    const t = id()
-    yield { type: 'toolStart', id: t, tool: 'ingest', label: 'Ingesting #protein-eng · Gmail (last 7 days)' }
-    await sleep(1100)
-    yield { type: 'toolEnd', id: t, ok: true, summary: '42 new episodes · 3 unresolved authors surfaced' }
+    yield { type: 'thought', text: 'Pulling the latest from your connected sources first.' }
+    const sources: [string, number][] = [
+      ['Slack · #protein-eng', 14],
+      ['Gmail · lab@claymore.bio', 9],
+      ['Notion · Claymore Lab', 6],
+      ['GitHub · claymore-lab', 13],
+    ]
+    let total = 0
+    for (const [label, cnt] of sources) {
+      const t = id()
+      yield { type: 'toolStart', id: t, tool: 'ingest', label: `Ingesting ${label}` }
+      await sleep(260)
+      total += cnt
+      yield { type: 'toolEnd', id: t, ok: true, summary: `${cnt} new episodes` }
+    }
+    yield { type: 'thought', text: `Synced ${total} new episodes across ${sources.length} sources.` }
   }
 
   // --- always ground in memory ---

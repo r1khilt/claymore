@@ -122,6 +122,10 @@ export function AskView({
   )
   const [busy, setBusy] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
+  // A question routed in from a Proactive nudge kicks off with a live "ingesting from the connected
+  // sources" beat before it answers — sells that the agent is pulling fresh memory. Fires once, on
+  // the first submit of this seeded chat.
+  const seedIngestRef = useRef(!!seedQuery)
   // Mirror of `turns` kept in sync through every update so persistence reads the latest snapshot
   // without waiting on a React state flush.
   const turnsRef = useRef<Turn[]>(turns)
@@ -148,6 +152,9 @@ export function AskView({
     const q = (raw ?? value).trim()
     if (!q || busy) return
     setValue('')
+    // The first send of a Proactive-seeded chat opens with a live ingest beat.
+    const ingestFirst = seedIngestRef.current
+    seedIngestRef.current = false
     // Snapshot the prior turns BEFORE appending this one — that's the conversation the agent sees.
     const ctx = buildContext(turnsRef.current)
     const idx = turnsRef.current.length
@@ -156,7 +163,7 @@ export function AskView({
     const ctrl = new AbortController()
     abortRef.current = ctrl
     try {
-      for await (const ev of agentStream(q, { ...ctx, signal: ctrl.signal })) {
+      for await (const ev of agentStream(q, { ...ctx, ingestFirst, signal: ctrl.signal })) {
         if (ctrl.signal.aborted) break
         applyTurns((t) => t.map((turn, i) => (i === idx ? { ...turn, events: [...turn.events, ev] } : turn)))
       }

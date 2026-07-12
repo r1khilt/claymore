@@ -51,15 +51,23 @@ function LabwarePlacement({
   sink: boolean
 }) {
   const ref = useRef<THREE.Group>(null)
+  // The eased "resting" position, tracked separately from what we render: the group is drawn at
+  // base + a travel arc, so a gripper move lifts up-and-over instead of dragging flat across the deck.
+  const base = useRef(target.clone())
   useFrame((_, dt) => {
     const g = ref.current
     if (!g) return
     // Frame-rate-independent smoothing (exponential) so a gripper move / instrument hand-off eases
     // at the same speed at 30fps or 144fps — a fixed per-frame lerp jitters with the frame rate.
-    const kPos = 1 - Math.exp(-dt * 10)
-    g.position.lerp(target, kPos)
+    const kPos = 1 - Math.exp(-dt * 9)
+    base.current.lerp(target, kPos)
+    // Up-and-over arc: rise while there's still deck to cross, settle to 0 exactly on arrival. A plate
+    // relocation reads as a lift-carry-place, not a slide through the benchtop.
+    const horiz = Math.hypot(target.x - base.current.x, target.z - base.current.z)
+    const lift = Math.min(horiz * 0.75, 1.15)
+    g.position.set(base.current.x, base.current.y + lift, base.current.z)
     const sc = sink ? 0.001 : 1
-    const kScale = 1 - Math.exp(-dt * 12)
+    const kScale = 1 - Math.exp(-dt * 11)
     g.scale.x += (sc - g.scale.x) * kScale
     g.scale.y += (sc - g.scale.y) * kScale
     g.scale.z += (sc - g.scale.z) * kScale
@@ -150,14 +158,19 @@ function Gantry({ protocol, geom, state }: { protocol: Protocol; geom: DeckGeom;
   target.current = { x: worldX(geom.width, state.pos.x), z: worldZ(geom.height, state.pos.y), dip: state.dipping }
 
   useFrame((_, dt) => {
-    const k = 1 - Math.exp(-dt * 10) // frame-rate-independent easing, matches the labware smoothing
+    const k = 1 - Math.exp(-dt * 9) // frame-rate-independent easing, matches the labware smoothing
     const t = target.current
     if (bridge.current) bridge.current.position.z += (t.z - bridge.current.position.z) * k
     if (carriage.current) {
-      carriage.current.position.x += (t.x - carriage.current.position.x) * k
-      carriage.current.position.z += (t.z - carriage.current.position.z) * k
-      const targetY = DECK_TOP + (t.dip ? 0.9 : 1.25)
-      carriage.current.position.y += (targetY - carriage.current.position.y) * k
+      const c = carriage.current
+      c.position.x += (t.x - c.position.x) * k
+      c.position.z += (t.z - c.position.z) * k
+      // Retract to a travel height while crossing the deck, then lower onto the well — so the head
+      // arcs from well to well the way a real gantry does, instead of sliding flat at one height.
+      const horiz = Math.hypot(t.x - c.position.x, t.z - c.position.z)
+      const travel = Math.min(Math.max(horiz - 0.14, 0) * 0.7, 0.6)
+      const targetY = DECK_TOP + (t.dip ? 0.9 : 1.25) + travel
+      c.position.y += (targetY - c.position.y) * k
     }
   })
 

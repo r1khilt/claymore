@@ -18,7 +18,7 @@ export interface RunPlayer {
 }
 
 const SPEEDS = [1, 2, 4]
-const STEP_MS = 640
+const STEP_MS = 720
 
 /** Steps a protocol run forward over time; state is derived deterministically so
  *  scrubbing / stepping / speed changes all just work. */

@@ -25,6 +25,7 @@ import { MemoryView } from '@/components/views/MemoryView'
 import { ApprovalsView } from '@/components/views/ApprovalsView'
 import { ConnectorsView } from '@/components/views/ConnectorsView'
 import { ProactiveView } from '@/components/views/ProactiveView'
+import { notifications } from '@/lib/mockData'
 
 const DEFAULT_PROFILE: Profile = {
   name: 'Rikhil T',
@@ -107,6 +108,11 @@ export default function App() {
   // but opening a different chat does — restoring that conversation's turns.
   const [activeChatId, setActiveChatId] = useState<string>(() => newChatId())
   const [loadedTurns, setLoadedTurns] = useState<PersistTurn[] | undefined>(undefined)
+  // A question routed in from a Proactive nudge — seeds the composer on the next new chat.
+  const [askSeed, setAskSeed] = useState<string | undefined>(undefined)
+  // Nav badges reflect live counts (approve/dismiss updates them) instead of frozen literals.
+  const [approvalsCount, setApprovalsCount] = useState(2)
+  const [proactiveCount, setProactiveCount] = useState(notifications.length)
   const [navOpen, setNavOpen] = usePanel('claymore.ui.nav')
   const [railOpen, setRailOpen] = usePanel('claymore.ui.rail')
   const showRail = view === 'ask'
@@ -138,6 +144,16 @@ export default function App() {
 
   function newChat() {
     setLoadedTurns(undefined)
+    setAskSeed(undefined)
+    setActiveChatId(newChatId())
+    setAskMode('chat')
+    setView('ask')
+  }
+
+  /** Open a fresh chat with the composer pre-filled — used by Proactive's "Ask about this". */
+  function askAbout(q: string) {
+    setLoadedTurns(undefined)
+    setAskSeed(q)
     setActiveChatId(newChatId())
     setAskMode('chat')
     setView('ask')
@@ -176,11 +192,11 @@ export default function App() {
       case 'memory':
         return <MemoryView />
       case 'approvals':
-        return <ApprovalsView />
+        return <ApprovalsView onCountChange={setApprovalsCount} />
       case 'connectors':
         return <ConnectorsView />
       case 'proactive':
-        return <ProactiveView />
+        return <ProactiveView onAsk={askAbout} onCountChange={setProactiveCount} />
       default:
         return null
     }
@@ -204,7 +220,7 @@ export default function App() {
             onNavigate={setView}
             onHome={goHome}
             onCollapse={() => setNavOpen(false)}
-            badges={{ approvals: 2, proactive: 3 }}
+            badges={{ approvals: approvalsCount, proactive: proactiveCount }}
             profile={profile}
             local={local}
             onRefresh={refresh}
@@ -270,6 +286,7 @@ export default function App() {
                 key={activeChatId}
                 onOpenProtocol={openProtocol}
                 initialTurns={loadedTurns}
+                seedQuery={askSeed}
                 onPersist={(turns) => persistChat(activeChatId, turns)}
                 userName={firstName}
               />

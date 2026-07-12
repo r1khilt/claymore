@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Check,
@@ -10,6 +10,7 @@ import {
   FlaskConical,
   Send,
   Bot,
+  Loader2,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -37,9 +38,28 @@ const KIND_LABEL: Record<ActionKind, string> = {
   physical_run: 'Physical run',
 }
 
-export function PendingActionCard({ action }: { action: PendingAction }) {
-  const [state, setState] = useState<'pending' | 'approved' | 'dismissed'>('pending')
+export function PendingActionCard({
+  action,
+  onApprove,
+  onDismiss,
+}: {
+  action: PendingAction
+  /** Called once the approved action finishes "executing" — parent moves it to Recently executed. */
+  onApprove?: (a: PendingAction) => void
+  onDismiss?: (token: string) => void
+}) {
+  const [state, setState] = useState<'pending' | 'approved' | 'done' | 'dismissed'>('pending')
   const Icon = KIND_ICON[action.kind]
+
+  // Approve → brief "executing…" → terminal "Done", then hand the item up to the parent.
+  useEffect(() => {
+    if (state !== 'approved') return
+    const t = window.setTimeout(() => {
+      setState('done')
+      onApprove?.(action)
+    }, 1300)
+    return () => window.clearTimeout(t)
+  }, [state, action, onApprove])
 
   if (state === 'dismissed') return null
 
@@ -73,30 +93,40 @@ export function PendingActionCard({ action }: { action: PendingAction }) {
 
       <div className="flex items-center gap-2 px-4 pb-3.5 pt-1">
         <AnimatePresence mode="wait" initial={false}>
-          {state === 'approved' ? (
+          {state === 'done' ? (
+            <motion.div
+              key="done"
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex items-center gap-1.5 rounded-lg bg-sage-500/14 px-3 py-1.5 text-[13px] font-medium text-sage-700"
+            >
+              <Check className="size-4" strokeWidth={2.5} />
+              Executed
+            </motion.div>
+          ) : state === 'approved' ? (
             <motion.div
               key="approved"
               initial={{ opacity: 0, scale: 0.96 }}
               animate={{ opacity: 1, scale: 1 }}
               className="flex items-center gap-1.5 rounded-lg bg-sage-500/14 px-3 py-1.5 text-[13px] font-medium text-sage-700"
             >
-              <Check className="size-4" strokeWidth={2.5} />
-              Approved — executing…
+              <Loader2 className="size-4 animate-spin" strokeWidth={2.5} />
+              Executing…
             </motion.div>
           ) : (
             <motion.div key="actions" className="flex items-center gap-2">
               <button
                 onClick={() => setState('approved')}
-                className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3.5 py-1.5 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-sage-600"
+                className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3.5 py-1.5 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-sage-600 active:scale-[0.97]"
               >
                 <Check className="size-4" strokeWidth={2.5} />
                 Approve
               </button>
-              <button className="rounded-lg px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-black/5 hover:text-ink">
-                Edit
-              </button>
               <button
-                onClick={() => setState('dismissed')}
+                onClick={() => {
+                  setState('dismissed')
+                  onDismiss?.(action.token)
+                }}
                 className="grid size-8 place-items-center rounded-lg text-faint transition-colors hover:bg-black/5 hover:text-ink"
                 title="Dismiss"
               >

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { GodRays, MeshGradient } from '@paper-design/shaders-react'
 
 /**
@@ -14,9 +15,29 @@ const RAY_COLORS = ['#fdf8ea', '#f1ecdb', '#e8f0e3']
 
 const layer = { position: 'absolute', inset: 0, width: '100%', height: '100%' } as const
 
+/** Freeze the two shader layers when the user prefers reduced motion OR the tab is hidden —
+ *  the shaders are the app's biggest standing GPU cost, and there's no reason to animate them
+ *  off-screen. Both signals are watched live, so returning to the tab resumes the motion. */
+function useShadersStill(): boolean {
+  const [still, setStill] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.hidden
+  })
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setStill(mq.matches || document.hidden)
+    mq.addEventListener('change', update)
+    document.addEventListener('visibilitychange', update)
+    return () => {
+      mq.removeEventListener('change', update)
+      document.removeEventListener('visibilitychange', update)
+    }
+  }, [])
+  return still
+}
+
 export function Background() {
-  const still =
-    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const still = useShadersStill()
 
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">

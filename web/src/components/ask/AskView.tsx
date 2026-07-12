@@ -101,18 +101,22 @@ function Suggestions({ onPick }: { onPick: (q: string) => void }) {
 export function AskView({
   onOpenProtocol,
   initialTurns,
+  seedQuery,
   onPersist,
   userName,
 }: {
   onOpenProtocol: (p: Protocol) => void
   /** Turns to seed the Composer with when restoring a saved chat (parent remounts on change). */
   initialTurns?: PersistTurn[]
+  /** Pre-fill the composer input (e.g. routed in from a Proactive nudge). Applied once on mount;
+   *  the parent remounts AskView per chat, so it seeds the fresh chat and never clobbers typing. */
+  seedQuery?: string
   /** Called after every completed turn so the parent can persist the chat locally. */
   onPersist?: (turns: PersistTurn[]) => void
   /** First name for the empty-state greeting. */
   userName?: string
 }) {
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(seedQuery ?? '')
   const [turns, setTurns] = useState<Turn[]>(() =>
     (initialTurns ?? []).map((t) => ({ ...t, running: false })),
   )

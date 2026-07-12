@@ -35,16 +35,33 @@ import { useRunPlayer } from './useRunPlayer'
 const Deck3D = lazy(() => import('./Deck3D'))
 
 /** Fires `true` when the element is (nearly) on-screen, `false` once it leaves. `rootMargin` pre-arms
- *  it so the heavy Canvas is already mounting a beat before the user reaches it. */
+ *  it so the heavy Canvas is already mounting a beat before the user reaches it. Entering view is
+ *  immediate; LEAVING is debounced (~450ms) so fast-scrolling past a chat of benches doesn't create
+ *  and tear down WebGL contexts many times a second (context creation is one of the priciest browser
+ *  ops). */
 function useInView<T extends Element>(rootMargin = '240px'): [React.RefObject<T | null>, boolean] {
   const ref = useRef<T>(null)
   const [inView, setInView] = useState(false)
+  const leaveTimer = useRef<number | null>(null)
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    const io = new IntersectionObserver(([entry]) => setInView(entry.isIntersecting), { rootMargin })
+    const io = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        if (leaveTimer.current) window.clearTimeout(leaveTimer.current)
+        setInView(true)
+      } else if (!leaveTimer.current) {
+        leaveTimer.current = window.setTimeout(() => {
+          leaveTimer.current = null
+          setInView(false)
+        }, 450)
+      }
+    }, { rootMargin })
     io.observe(el)
-    return () => io.disconnect()
+    return () => {
+      io.disconnect()
+      if (leaveTimer.current) window.clearTimeout(leaveTimer.current)
+    }
   }, [rootMargin])
   return [ref, inView]
 }
@@ -159,7 +176,11 @@ export function InlineBench({
                 </Suspense>
               </ErrorBoundary>
             ) : (
-              <div className="grid h-full place-items-center text-[12.5px] text-faint">Bench paused</div>
+              // Off-screen: hold a static 2D snapshot (a poster) instead of a bare label, so scrolling
+              // the bench back into view cross-fades from a real deck rather than blank text.
+              <div className="h-full p-2 opacity-70">
+                <Deck2D protocol={protocol} state={state} />
+              </div>
             )
           ) : (
             // No WebGL (or the 3D scene threw) → the 2D engine plays the very same run.

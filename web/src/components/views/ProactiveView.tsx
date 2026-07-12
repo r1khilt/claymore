@@ -1,10 +1,18 @@
-import { motion } from 'framer-motion'
-import { Lightbulb, GitCompareArrows, Newspaper, ArrowRight, X, type LucideIcon } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { Lightbulb, GitCompareArrows, Newspaper, ArrowRight, BellOff, X, type LucideIcon } from 'lucide-react'
 import type { LabNotification, NotificationKind } from '@/lib/types'
 import { notifications } from '@/lib/mockData'
 import { PlatformIcon } from '@/lib/sources'
 import { ViewShell } from './ViewShell'
 import { shortDate } from '@/lib/utils'
+
+/** The question "Ask about this" pre-fills into the composer for each nudge kind. */
+function askPrompt(n: LabNotification): string {
+  if (n.kind === 'never_tested') return `${n.title} — what would it take to run it, and what's blocking?`
+  if (n.kind === 'contradiction') return `${n.title} — reconcile the two decisions and tell me which is current.`
+  return `Expand on this: ${n.title}`
+}
 
 const KIND: Record<
   NotificationKind,
@@ -26,7 +34,7 @@ const PRIORITY: Record<LabNotification['priority'], string> = {
   low: 'text-faint',
 }
 
-function Card({ n }: { n: LabNotification }) {
+function Card({ n, onAsk, onDismiss }: { n: LabNotification; onAsk: (q: string) => void; onDismiss: (id: string) => void }) {
   const k = KIND[n.kind]
   const Icon = k.icon
   return (
@@ -34,6 +42,7 @@ function Card({ n }: { n: LabNotification }) {
       layout
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.97 }}
       className="glass rounded-2xl p-4"
     >
       <div className="flex items-center gap-2.5">
@@ -46,7 +55,11 @@ function Card({ n }: { n: LabNotification }) {
             {k.label} · {n.priority} priority
           </div>
         </div>
-        <button className="ml-auto grid size-7 place-items-center rounded-lg text-faint transition-colors hover:bg-black/5 hover:text-ink">
+        <button
+          onClick={() => onDismiss(n.id)}
+          aria-label="Dismiss"
+          className="ml-auto grid size-7 place-items-center rounded-lg text-faint transition-colors hover:bg-black/5 hover:text-ink"
+        >
           <X className="size-4" strokeWidth={2} />
         </button>
       </div>
@@ -64,11 +77,17 @@ function Card({ n }: { n: LabNotification }) {
       </div>
 
       <div className="mt-3.5 flex items-center gap-2 border-t border-line/70 pt-3">
-        <button className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-sage-600">
+        <button
+          onClick={() => onAsk(askPrompt(n))}
+          className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-sage-600 active:scale-[0.97]"
+        >
           Ask about this
           <ArrowRight className="size-3.5" strokeWidth={2.25} />
         </button>
-        <button className="rounded-lg px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-black/5 hover:text-ink">
+        <button
+          onClick={() => onDismiss(n.id)}
+          className="rounded-lg px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-black/5 hover:text-ink"
+        >
           Dismiss
         </button>
       </div>
@@ -76,17 +95,38 @@ function Card({ n }: { n: LabNotification }) {
   )
 }
 
-export function ProactiveView() {
+export function ProactiveView({
+  onAsk = () => {},
+  onCountChange,
+}: {
+  onAsk?: (q: string) => void
+  onCountChange?: (n: number) => void
+}) {
+  const [items, setItems] = useState<LabNotification[]>(notifications)
+  useEffect(() => {
+    onCountChange?.(items.length)
+  }, [items.length, onCountChange])
+  const dismiss = (id: string) => setItems((xs) => xs.filter((n) => n.id !== id))
+
   return (
     <ViewShell
       title="Proactive"
       subtitle="Claymore reaches out first — surfacing untested ideas, contradicted decisions, and briefs before you ask."
     >
-      <div className="flex flex-col gap-3">
-        {notifications.map((n) => (
-          <Card key={n.id} n={n} />
-        ))}
-      </div>
+      {items.length === 0 ? (
+        <div className="glass flex items-center justify-center gap-2 rounded-2xl px-4 py-8 text-[13px] text-muted">
+          <BellOff className="size-4 text-faint" strokeWidth={1.85} />
+          Nothing to surface right now — you’re current.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <AnimatePresence>
+            {items.map((n) => (
+              <Card key={n.id} n={n} onAsk={onAsk} onDismiss={dismiss} />
+            ))}
+          </AnimatePresence>
+        </div>
+      )}
     </ViewShell>
   )
 }

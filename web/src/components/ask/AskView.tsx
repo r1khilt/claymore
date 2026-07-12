@@ -60,6 +60,7 @@ export interface PersistTurn {
 
 const SUGGESTIONS = [
   'Fill a 96-well plate with buffer',
+  'Run a magnetic bead cleanup',
   'Was our hypothesis that descriptors predict CBX2 activity true?',
   'Did we ever test the Y hypothesis?',
   'Dock the CBX2 fragment library',

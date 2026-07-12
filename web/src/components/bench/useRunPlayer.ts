@@ -8,6 +8,8 @@ export interface RunPlayer {
   speed: number
   state: RunState
   toggle: () => void
+  play: () => void
+  pause: () => void
   restart: () => void
   next: () => void
   prev: () => void
@@ -57,6 +59,11 @@ export function useRunPlayer(protocol: Protocol): RunPlayer {
         if (!p && index >= total - 1) setIndex(-1)
         return !p
       }),
+    play: () => {
+      if (index >= total - 1) setIndex(-1)
+      setPlaying(true)
+    },
+    pause: () => setPlaying(false),
     restart: () => {
       setPlaying(false)
       setIndex(-1)

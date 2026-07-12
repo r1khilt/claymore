@@ -39,7 +39,7 @@ import type {
 import type { Protocol } from '@/lib/protocol'
 import { cn } from '@/lib/utils'
 import { AnswerView } from './AnswerView'
-import { ProtocolCard } from './ProtocolCard'
+import { InlineBench } from '@/components/bench/InlineBench'
 import { MLResultCard } from './MLResultCard'
 import { Markdown } from './Markdown'
 
@@ -540,7 +540,7 @@ export function AgentTurn({
         blocks.push(<AnswerView key={i} reply={{ text: e.text, citations: e.citations }} />)
         break
       case 'protocol':
-        blocks.push(<ProtocolCard key={i} protocol={e.protocol} onOpen={() => onOpenProtocol(e.protocol)} />)
+        blocks.push(<InlineBench key={i} protocol={e.protocol} onExpand={() => onOpenProtocol(e.protocol)} />)
         break
       case 'analysis':
         blocks.push(<AnalysisCard key={i} result={e.analysis} />)

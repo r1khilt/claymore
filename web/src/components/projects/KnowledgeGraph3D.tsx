@@ -18,25 +18,12 @@ import { Html, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { GraphEdge, GraphNode } from '@/lib/projectTypes'
 import { useForceLayout, type PosMap } from '@/lib/graphLayout'
+import { webglAvailable } from '@/lib/webgl'
 import { EdgesLayer, KIND_COLOR, NodeLabel, NodeMesh, degreeMap } from './GraphPrimitives'
 import { GraphFallback2D } from './GraphFallback2D'
 
 function nodeRadius(deg: number): number {
   return Math.min(0.62, 0.32 + deg * 0.03)
-}
-
-/** True if the browser can create a WebGL context (else we fall back to 2D SVG).
- *  Releases the probe context immediately so we don't orphan a GL context per mount. */
-function webglAvailable(): boolean {
-  try {
-    const c = document.createElement('canvas')
-    const gl = (c.getContext('webgl2') || c.getContext('webgl')) as WebGLRenderingContext | null
-    if (!gl) return false
-    gl.getExtension('WEBGL_lose_context')?.loseContext()
-    return true
-  } catch {
-    return false
-  }
 }
 
 /* ------------------------------------------------------------------- camera -- */

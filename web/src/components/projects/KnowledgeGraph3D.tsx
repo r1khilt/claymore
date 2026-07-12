@@ -13,6 +13,7 @@
  * resolve by color. Falls back to a 2D SVG render when WebGL is unavailable.
  */
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
+import { useReducedMotion } from 'framer-motion'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Html, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
@@ -93,6 +94,7 @@ function CameraRig({
 }) {
   const controls = useThree((s) => s.controls) as unknown as OrbitLike | null
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
+  const reduced = useReducedMotion()
   const autoFit = useRef(true)
   const idle = useRef(true)
   const tmpCenter = useRef(new THREE.Vector3())
@@ -127,7 +129,9 @@ function CameraRig({
       offset.setLength(cur + (want - cur) * 0.07)
       camera.position.copy(controls.target).add(offset)
     }
-    controls.autoRotate = autoFit.current && idle.current
+    // Never idle-orbit when the user prefers reduced motion — a forever-spinning hero is a
+    // classic vestibular trigger.
+    controls.autoRotate = !reduced && autoFit.current && idle.current
     controls.update()
   })
   return null

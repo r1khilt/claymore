@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import { primaryPipette, type Protocol } from '@/lib/protocol'
 import { webglAvailable } from '@/lib/webgl'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { cn } from '@/lib/utils'
 import { Deck2D } from './Deck2D'
 import { useRunPlayer } from './useRunPlayer'
@@ -65,6 +66,7 @@ export function InlineBench({
   const webgl = useMemo(webglAvailable, [])
   const startedRef = useRef(false)
   const completedRef = useRef(false)
+  const [gl3dFailed, setGl3dFailed] = useState(false)
 
   // The run has reached the end at least once. Fire onComplete a single time.
   const finished = index >= total - 1
@@ -136,22 +138,31 @@ export function InlineBench({
       {/* live 3D bench — mounted only while on-screen */}
       <div className="relative mx-4 mt-3 overflow-hidden rounded-xl bg-[#eeece6] ring-1 ring-inset ring-black/[0.06]">
         <div className="aspect-[16/10] w-full">
-          {webgl ? (
+          {webgl && !gl3dFailed ? (
             inView ? (
-              <Suspense
+              <ErrorBoundary
                 fallback={
-                  <div className="grid h-full place-items-center text-[12.5px] text-muted">
-                    Loading bench…
+                  <div className="h-full p-2">
+                    <Deck2D protocol={protocol} state={state} />
                   </div>
                 }
+                onError={() => setGl3dFailed(true)}
               >
-                <Deck3D protocol={protocol} state={state} />
-              </Suspense>
+                <Suspense
+                  fallback={
+                    <div className="grid h-full place-items-center text-[12.5px] text-muted">
+                      Loading bench…
+                    </div>
+                  }
+                >
+                  <Deck3D protocol={protocol} state={state} />
+                </Suspense>
+              </ErrorBoundary>
             ) : (
               <div className="grid h-full place-items-center text-[12.5px] text-faint">Bench paused</div>
             )
           ) : (
-            // No WebGL → the 2D engine plays the very same run.
+            // No WebGL (or the 3D scene threw) → the 2D engine plays the very same run.
             <div className="h-full p-2">
               <Deck2D protocol={protocol} state={state} />
             </div>

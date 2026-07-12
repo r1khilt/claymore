@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
 import { PanelLeftOpen, PanelRightOpen, Plus } from 'lucide-react'
 import type { View } from '@/lib/types'
 import { isLive } from '@/lib/api'
@@ -187,6 +187,7 @@ export default function App() {
   }
 
   return (
+    <MotionConfig reducedMotion="user">
     <div className="relative flex h-screen w-full overflow-hidden text-ink">
       <Background />
 
@@ -312,5 +313,6 @@ export default function App() {
         )}
       </div>
     </div>
+    </MotionConfig>
   )
 }

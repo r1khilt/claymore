@@ -13,8 +13,10 @@
   /* canvas + ink */
   --color-canvas: #f4f2ec;
   --color-ink: #1c1d18;
-  --color-muted: #6f7268;
-  --color-faint: #a2a498;
+  /* muted/faint darkened to clear WCAG AA 4.5:1 on the canvas — they drive secondary labels,
+     timestamps, and placeholders app-wide, so this one change lifts legibility everywhere. */
+  --color-muted: #63665d;
+  --color-faint: #7c7e73;
   --color-line: rgba(28, 29, 24, 0.08);
   --color-line-strong: rgba(28, 29, 24, 0.14);
 
@@ -88,6 +90,18 @@
   }
   ::selection {
     background: color-mix(in oklab, var(--color-sage-500) 22%, transparent);
+  }
+  /* Respect a user's reduced-motion preference: neutralize spinners/pulses and collapse
+     transitions. framer-motion is handled separately via <MotionConfig reducedMotion="user">. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
   }
   /* soft, quiet scrollbars */
   * {

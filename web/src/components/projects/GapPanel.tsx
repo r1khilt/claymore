@@ -97,7 +97,7 @@ function GapCard({
             onRun()
           }}
           disabled={running || resolved}
-          className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-[12.5px] font-medium text-white transition-colors hover:bg-ink/85 disabled:cursor-not-allowed disabled:opacity-45"
+          className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3 py-1.5 text-[12.5px] font-medium text-white transition-colors hover:bg-sage-600 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {running ? (
             <>

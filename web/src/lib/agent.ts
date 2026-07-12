@@ -798,11 +798,11 @@ async function* runAgentLive(query: string, ctx?: AgentContext): AsyncGenerator<
       signal: ctx?.signal,
     })
   } catch {
-    yield { type: 'error', message: 'could not reach the agent endpoint' }
+    yield { type: 'error', message: "Claymore couldn't reach the agent. Check your connection and try again." }
     return
   }
   if (!res.ok || !res.body) {
-    yield { type: 'error', message: `agent unavailable (${res.status})` }
+    yield { type: 'error', message: `The agent is temporarily unavailable (${res.status}). Retry in a moment.` }
     return
   }
   const reader = res.body.getReader()

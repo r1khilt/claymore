@@ -51,19 +51,26 @@ function LabwarePlacement({
   sink: boolean
 }) {
   const ref = useRef<THREE.Group>(null)
+  // Latest target in a ref so useFrame reads the live value without React re-applying a `position`
+  // prop each step (that prop-vs-useFrame fight is what made moves snap/chop). Bind the JSX position
+  // ONCE (mount), then useFrame fully owns it.
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const home = useRef<[number, number, number]>([target.x, target.y, target.z])
   // The eased "resting" position, tracked separately from what we render: the group is drawn at
   // base + a travel arc, so a gripper move lifts up-and-over instead of dragging flat across the deck.
   const base = useRef(target.clone())
   useFrame((_, dt) => {
     const g = ref.current
     if (!g) return
+    const t = targetRef.current
     // Frame-rate-independent smoothing (exponential) so a gripper move / instrument hand-off eases
     // at the same speed at 30fps or 144fps — a fixed per-frame lerp jitters with the frame rate.
     const kPos = 1 - Math.exp(-dt * 9)
-    base.current.lerp(target, kPos)
+    base.current.lerp(t, kPos)
     // Up-and-over arc: rise while there's still deck to cross, settle to 0 exactly on arrival. A plate
     // relocation reads as a lift-carry-place, not a slide through the benchtop.
-    const horiz = Math.hypot(target.x - base.current.x, target.z - base.current.z)
+    const horiz = Math.hypot(t.x - base.current.x, t.z - base.current.z)
     const lift = Math.min(horiz * 0.75, 1.15)
     g.position.set(base.current.x, base.current.y + lift, base.current.z)
     const sc = sink ? 0.001 : 1
@@ -73,7 +80,7 @@ function LabwarePlacement({
     g.scale.z += (sc - g.scale.z) * kScale
   })
   return (
-    <group ref={ref} position={[target.x, target.y, target.z]}>
+    <group ref={ref} position={home.current}>
       <LabwareMesh kind={lab.kind} labId={lab.id} fills={fills} used={used} magnet={magnet} />
     </group>
   )
@@ -157,6 +164,11 @@ function Gantry({ protocol, geom, state }: { protocol: Protocol; geom: DeckGeom;
   const target = useRef({ x: 0, z: 0, dip: false })
   target.current = { x: worldX(geom.width, state.pos.x), z: worldZ(geom.height, state.pos.y), dip: state.dipping }
 
+  // Stable mount position — set ONCE. If we bound the JSX `position` prop to state.pos it would be
+  // re-applied by React on every step, snapping the head to the next well and fighting the easing
+  // below (the choppiness). useFrame owns the carriage from here; the prop is just the first frame.
+  const carriageHome = useRef<[number, number, number]>([target.current.x, DECK_TOP + 1.25, target.current.z])
+
   useFrame((_, dt) => {
     const k = 1 - Math.exp(-dt * 9) // frame-rate-independent easing, matches the labware smoothing
     const t = target.current
@@ -166,9 +178,12 @@ function Gantry({ protocol, geom, state }: { protocol: Protocol; geom: DeckGeom;
       c.position.x += (t.x - c.position.x) * k
       c.position.z += (t.z - c.position.z) * k
       // Retract to a travel height while crossing the deck, then lower onto the well — so the head
-      // arcs from well to well the way a real gantry does, instead of sliding flat at one height.
+      // arcs from well to well the way a real gantry does, instead of sliding flat at one height. A
+      // small deadband keeps tight well-to-well hops precise (no bob); the smoothstep ramp above it
+      // means the lift eases in rather than switching on at a hard threshold.
       const horiz = Math.hypot(t.x - c.position.x, t.z - c.position.z)
-      const travel = Math.min(Math.max(horiz - 0.14, 0) * 0.7, 0.6)
+      const ramp = Math.min(Math.max((horiz - 0.12) / 0.9, 0), 1)
+      const travel = ramp * ramp * (3 - 2 * ramp) * 0.6 // smoothstep → gentle arc, no kink
       const targetY = DECK_TOP + (t.dip ? 0.9 : 1.25) + travel
       c.position.y += (targetY - c.position.y) * k
     }
@@ -202,7 +217,7 @@ function Gantry({ protocol, geom, state }: { protocol: Protocol; geom: DeckGeom;
         </mesh>
       </group>
       {/* carriage + pipette head */}
-      <group ref={carriage} position={[worldX(geom.width, state.pos.x), DECK_TOP + 1.25, worldZ(geom.height, state.pos.y)]}>
+      <group ref={carriage} position={carriageHome.current}>
         <mesh castShadow>
           <boxGeometry args={[headW, 0.5, multi || big ? 0.62 : 0.34]} />
           <meshStandardMaterial color="#33352f" metalness={0.2} roughness={0.55} />

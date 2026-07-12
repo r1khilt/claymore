@@ -722,3 +722,50 @@ class ConnectorManager:
                     f"Could not disconnect {_NAMES[source]}. Try again."
                 ) from exc
         await self.state.delete(self.lab_id, self.user_id, source)
+
+    async def send_slack_message(self, *, channel: str, text: str) -> dict[str, Any]:
+        """Post a Slack message via Composio — the write-back behind the dashboard's one-tap Send.
+
+        Executes the SLACK send tool for the configured Composio user against the connected
+        account. Returns a small dict of non-secret handles (``channel`` + ``ts``). Raises
+        :class:`ConnectorServiceError` (with a safe, user-displayable message + HTTP status) on
+        any failure, so the route can surface it without leaking a token or payload.
+        """
+        chan = channel.strip().lstrip("#").strip()
+        body = text.strip()
+        if not chan or not body:
+            raise ConnectorServiceError("A channel and a message are required.", status_code=400)
+
+        client = self._client()
+        # Composio's Slack toolkit has used a couple of slugs for "post a message"; try the
+        # verbose current one first, then the shorter legacy one, so the send is resilient.
+        candidates = ("SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL", "SLACK_SEND_MESSAGE")
+        last_error = "Slack send failed."
+        for slug in candidates:
+            try:
+                result = await _sdk_call(
+                    client.tools.execute,
+                    slug,
+                    user_id=self.composio_user_id,
+                    arguments={"channel": chan, "text": body},
+                )
+            except Exception as exc:  # unknown-tool / transport — try the next candidate slug
+                last_error = type(exc).__name__
+                _log.warning("composio.slack_send_error", slug=slug, error_type=last_error)
+                continue
+            ok = bool(_get(result, "successful", _get(result, "success", False)))
+            if not ok:
+                last_error = str(_get(result, "error", "") or "rejected")
+                _log.warning("composio.slack_send_rejected", slug=slug, error=last_error[:120])
+                continue
+            data = _get(result, "data", {}) or {}
+            message = _get(data, "message", {}) or {}
+            ts = str(_get(data, "ts", "") or _get(message, "ts", ""))
+            _log.info("composio.slack_sent", channel=chan, slug=slug)
+            return {"ok": True, "channel": chan, "ts": ts}
+
+        raise ConnectorServiceError(
+            f"Slack did not accept the message ({last_error}). "
+            "Check that Slack is connected in Connectors and the bot is in that channel.",
+            status_code=502,
+        )

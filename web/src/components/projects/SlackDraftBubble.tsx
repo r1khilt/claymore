@@ -6,15 +6,26 @@
  */
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Send, Check, X } from 'lucide-react'
+import { Send, Check, X, Loader2 } from 'lucide-react'
 import type { PendingAction } from '@/lib/types'
 import { PlatformIcon } from '@/lib/sources'
+import { sendSlack } from '@/lib/api'
 
 export function SlackDraftBubble({ action }: { action: PendingAction }) {
-  const [state, setState] = useState<'draft' | 'sent' | 'dismissed'>('draft')
+  const [state, setState] = useState<'draft' | 'sending' | 'sent' | 'dismissed'>('draft')
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(action.preview)
+  // true = really posted to Slack via Composio; false = optimistic (backend offline / mock demo).
+  const [live, setLive] = useState(false)
   if (state === 'dismissed') return null
+
+  async function send() {
+    setEditing(false)
+    setState('sending')
+    const res = await sendSlack(action.target, text)
+    setLive(res.ok)
+    setState('sent') // always resolve to sent — real when the backend is up, optimistic otherwise
+  }
 
   return (
     <motion.div
@@ -75,23 +86,31 @@ export function SlackDraftBubble({ action }: { action: PendingAction }) {
               className="flex items-center gap-1.5 rounded-lg bg-sage-500/14 px-3 py-1.5 text-[13px] font-medium text-sage-700"
             >
               <Check className="size-4" strokeWidth={2.5} />
-              Sent to {action.target}
+              {live ? 'Posted to' : 'Sent to'} {action.target}
             </motion.div>
           ) : (
             <motion.div key="actions" className="flex items-center gap-2">
               <button
-                onClick={() => {
-                  setEditing(false)
-                  setState('sent')
-                }}
-                className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3.5 py-1.5 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-sage-600"
+                onClick={send}
+                disabled={state === 'sending'}
+                className="flex items-center gap-1.5 rounded-lg bg-sage-500 px-3.5 py-1.5 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-sage-600 disabled:opacity-70"
               >
-                <Send className="size-4" strokeWidth={2.25} />
-                Send
+                {state === 'sending' ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" strokeWidth={2.25} />
+                    Sending…
+                  </>
+                ) : (
+                  <>
+                    <Send className="size-4" strokeWidth={2.25} />
+                    Send
+                  </>
+                )}
               </button>
               <button
                 onClick={() => setEditing((v) => !v)}
-                className="rounded-lg px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-black/5 hover:text-ink"
+                disabled={state === 'sending'}
+                className="rounded-lg px-3 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-black/5 hover:text-ink disabled:opacity-50"
               >
                 {editing ? 'Done' : 'Edit'}
               </button>

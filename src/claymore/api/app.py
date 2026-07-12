@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from claymore import __version__, agent
+from claymore.api.routes.actions import router as actions_router
 from claymore.api.routes.admin import router as admin_router
 from claymore.api.routes.agent import router as agent_router
 from claymore.api.routes.ask import router as ask_router
@@ -62,6 +63,7 @@ app.include_router(admin_router)
 app.include_router(ask_router, dependencies=web_auth)  # POST /api/ask (WEB_API_ENABLED + web auth)
 app.include_router(agent_router, dependencies=web_auth)  # POST /api/agent (Composer SSE; + auth)
 app.include_router(connectors_router)  # /api/connectors/* (Composio OAuth + durable sync)
+app.include_router(actions_router, dependencies=web_auth)  # POST /api/actions/slack (Composio)
 app.include_router(local_router, dependencies=web_auth)  # /api/local/* (chats/settings; + auth)
 
 

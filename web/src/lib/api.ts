@@ -20,6 +20,24 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/** Post an approved draft to Slack via the backend Composio write-back (`/api/actions/slack`).
+ *  Returns whether it was really sent — the caller falls back to an optimistic UI when the
+ *  backend is offline (the mock demo), and shows a real "sent" when it's up + Slack connected. */
+export async function sendSlack(channel: string, text: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/actions/slack', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel, text }),
+    })
+    if (res.ok) return { ok: true }
+    const detail = await res.json().catch(() => null)
+    return { ok: false, error: (detail as { detail?: string } | null)?.detail ?? `send failed (${res.status})` }
+  } catch {
+    return { ok: false, error: 'offline' }
+  }
+}
+
 export async function ask(query: string, signal?: AbortSignal): Promise<Reply> {
   if (LIVE) {
     const res = await fetch('/api/ask', {

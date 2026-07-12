@@ -262,6 +262,48 @@ interface Canned {
 }
 
 const CANNED: Canned[] = [
+  // --- Proactive nudges: "Ask about this" routes here for a grounded, cited answer.
+  //     Listed first so they win over the generic topic matches below. ---
+  {
+    match: /never tested|untested|what would it take to run|what.?s blocking/i,
+    reply: {
+      text: "That's Lucas's allosteric-pocket idea for CBX2 from last week — it has never been run. To run it: use the grid box Philip already prepped in docking-pipeline (commit 3f2c1ab) with Maya's <2% DMSO buffer (Assay Buffer v3), then dock the fragment library into the allosteric site. The only blocker is that the setup exists but no production run is logged — queue the docking pass and it's unblocked.",
+      scopeLabel: 'last week',
+      citations: [CIT.lucasSlack2, CIT.philipCommit, CIT.mayaNotion],
+      pendingAction: {
+        token: 'A3',
+        kind: 'file_issue',
+        description: 'File an issue on claymore/docking-pipeline',
+        target: 'claymore/docking-pipeline',
+        preview:
+          'Run the allosteric-pocket docking pass on CBX2\n\nSetup exists (grid box 3f2c1ab) but no run is logged. Dock the fragment library into the allosteric site with the <2% DMSO buffer (Assay Buffer v3). Proposed by Lucas; the blocker is execution, not setup.',
+      },
+    },
+  },
+  {
+    match: /superseded|reconcile|which is (the )?current/i,
+    reply: {
+      text: "Two decisions conflict. The Tuesday sync deprioritized wet-lab until DMSO tolerance is confirmed; Sofia's email a few days earlier proposes crystal soaks now. The Tuesday sync is the more recent lab-wide decision, so it's the current one — hold Sofia's soaks until DMSO tolerance is confirmed on the docking side, then revisit her conditions. Worth telling Sofia so she isn't left blocked.",
+      scopeLabel: 'this week',
+      citations: [CIT.granola, CIT.sofiaGmail],
+      pendingAction: {
+        token: 'A4',
+        kind: 'draft_reply',
+        description: 'Reply to Sofia in Gmail',
+        target: 'Sofia Reyes',
+        preview:
+          "Thanks Sofia — love the soak conditions. We deprioritized wet-lab in Tuesday's sync until we confirm DMSO tolerance on the docking side; once that's in (this week) we'll queue your 10 mM / 4 h soak. Will loop you in.",
+      },
+    },
+  },
+  {
+    match: /thursday brief|expand on the thursday|what moved on cbx2/i,
+    reply: {
+      text: 'This week on CBX2: Lucas proposed the allosteric-pocket hypothesis, Philip prepped the docking site + grid box (and added a DMSO-tolerance flag), Sofia sent crystal-soak conditions, and Rikhin asked whether the Y-hypothesis control was ever run — it wasn’t. The one open thread is queuing that docking pass; everything else is set up and waiting on it.',
+      scopeLabel: 'this week',
+      citations: [CIT.lucasSlack, CIT.philipCommit, CIT.rikhinImsg],
+    },
+  },
   {
     match: /lucas|suggest|allosteric|(x |the )protein|cbx2/i,
     reply: {

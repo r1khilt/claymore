@@ -7,11 +7,14 @@ import { PlatformIcon } from '@/lib/sources'
 import { ViewShell } from './ViewShell'
 import { shortDate } from '@/lib/utils'
 
-/** The question "Ask about this" pre-fills into the composer for each nudge kind. */
+/** The question "Ask about this" pre-fills into the composer for each nudge kind.
+ *  Phrased to route to a grounded, cited answer (see mockData CANNED). */
 function askPrompt(n: LabNotification): string {
-  if (n.kind === 'never_tested') return `${n.title} — what would it take to run it, and what's blocking?`
-  if (n.kind === 'contradiction') return `${n.title} — reconcile the two decisions and tell me which is current.`
-  return `Expand on this: ${n.title}`
+  if (n.kind === 'never_tested')
+    return "The allosteric-pocket idea from last week was never tested — what would it take to run it, and what's blocking?"
+  if (n.kind === 'contradiction')
+    return 'A lab decision may have been superseded — reconcile Tuesday’s roundup with Sofia’s email and tell me which is current.'
+  return 'Expand on the Thursday brief — what moved on CBX2 this week?'
 }
 
 const KIND: Record<

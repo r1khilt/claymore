@@ -48,12 +48,32 @@ function useInView<T extends Element>(rootMargin = '240px'): [React.RefObject<T 
   return [ref, inView]
 }
 
-export function InlineBench({ protocol, onExpand }: { protocol: Protocol; onExpand: () => void }) {
+export function InlineBench({
+  protocol,
+  onExpand,
+  onComplete,
+}: {
+  protocol: Protocol
+  onExpand: () => void
+  /** Fires once when the run first reaches its last step — lets the turn hold its written
+   *  conclusion until the bench has actually finished playing. */
+  onComplete?: () => void
+}) {
   const player = useRunPlayer(protocol)
   const { index, total, playing, speed, state } = player
   const [containerRef, inView] = useInView<HTMLDivElement>()
   const webgl = useMemo(webglAvailable, [])
   const startedRef = useRef(false)
+  const completedRef = useRef(false)
+
+  // The run has reached the end at least once. Fire onComplete a single time.
+  const finished = index >= total - 1
+  useEffect(() => {
+    if (finished && !completedRef.current) {
+      completedRef.current = true
+      onComplete?.()
+    }
+  }, [finished, onComplete])
 
   const general = protocol.mode === 'general'
   const pipette = primaryPipette(protocol)

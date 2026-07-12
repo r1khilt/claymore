@@ -511,6 +511,13 @@ export function AgentTurn({
     events.flatMap((e) => (e.type === 'answer' ? [e.text.trim()] : [])),
   )
 
+  // A protocol turn plays its bench run client-side over ~20s after the card mounts. The written
+  // conclusion ("simulate ran clean…") is the RESULT of that run, so hold any answer that comes
+  // after the protocol until the bench signals it has finished playing — otherwise the analysis
+  // lands before the run it describes.
+  const protocolIdx = events.findIndex((e) => e.type === 'protocol')
+  const [benchDone, setBenchDone] = useState(false)
+
   // Split the stream: thoughts + ordinary tool calls fold into the Activity line;
   // answers and rich cards render full-size below it.
   const trace: TraceItem[] = []
@@ -537,10 +544,19 @@ export function AgentTurn({
         break
       }
       case 'answer':
+        // Hold a post-run conclusion until the bench finishes; other answers render immediately.
+        if (protocolIdx >= 0 && i > protocolIdx && !benchDone) break
         blocks.push(<AnswerView key={i} reply={{ text: e.text, citations: e.citations }} />)
         break
       case 'protocol':
-        blocks.push(<InlineBench key={i} protocol={e.protocol} onExpand={() => onOpenProtocol(e.protocol)} />)
+        blocks.push(
+          <InlineBench
+            key={i}
+            protocol={e.protocol}
+            onExpand={() => onOpenProtocol(e.protocol)}
+            onComplete={() => setBenchDone(true)}
+          />,
+        )
         break
       case 'analysis':
         blocks.push(<AnalysisCard key={i} result={e.analysis} />)

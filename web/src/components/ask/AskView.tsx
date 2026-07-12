@@ -59,8 +59,8 @@ export interface PersistTurn {
 }
 
 const SUGGESTIONS = [
-  'Fill a 96-well plate with buffer',
-  'Run a magnetic bead cleanup',
+  'Set up the thermal-shift assay plate with Maya’s buffer',
+  'Titrate the fragment across the plate for a dose-response',
   'Was our hypothesis that descriptors predict CBX2 activity true?',
   'Did we ever test the Y hypothesis?',
   'Dock the CBX2 fragment library',

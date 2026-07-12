@@ -9,7 +9,7 @@
  * scenes are built by generateScene(); anything off the Opentrons deck falls back to a
  * general lab-robot scene + a PyLabRobot script rather than a refusal.
  */
-import type { Citation } from './types'
+import type { Citation, Reply } from './types'
 import type { Protocol } from './protocol'
 import { editInstrumentScene, generateScene, instrumentSceneParams, isProtocolRequest } from './protocol'
 import { answerFor } from './mockData'
@@ -554,6 +554,21 @@ function changeSummary(prev: Protocol, next: Protocol): string {
   return `Updated the run — now ${changed}. I kept everything else the same: same prep, same sample, still filling every well before the hand-off.`
 }
 
+/** A grounded, cited conclusion that wraps a bench run — so the 3D scene reads as the OUTPUT of a
+ *  reasoning step (search memory -> ground in the assay notes -> build to match -> simulate), the
+ *  same shape as the ML/Claude-Science answers, not a bare demo. */
+function protocolConclusion(proto: Protocol, mem: Reply, general: boolean): string {
+  const c = mem.citations[0]
+  const why = c
+    ? `Grounded in ${c.author}'s ${c.sourceLabel} — "${c.quote}" — I built the run to match: ${proto.deck.labware.length} labware, ${proto.steps.length} steps. `
+    : `${proto.fallbackNote ? proto.fallbackNote + ' ' : ''}I composed the run — ${proto.deck.labware.length} labware, ${proto.steps.length} steps. `
+  const sim = general
+    ? 'PyLabRobot dry-ran the movement script clean. '
+    : 'opentrons.simulate ran it clean — no deck collisions. '
+  const tail = 'Scrub the run above, or open the full bench for the code. Nothing physical runs without your approval.'
+  return why + sim + tail
+}
+
 /** The agent run as an async event stream. */
 export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerator<AgentEvent> {
   let n = 0
@@ -712,6 +727,15 @@ export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerat
     const g = id()
     const proto = generateScene(q).protocol
     const general = proto.mode === 'general'
+    // Reason from what the lab already decided before building — the bench is the conclusion of a
+    // grounded step, not a standalone demo.
+    if (grounded) {
+      const c = memReply.citations[0]
+      yield {
+        type: 'thought',
+        text: `${c.author}'s ${c.sourceLabel} is the ground truth here — building the run to match it.`,
+      }
+    }
     yield {
       type: 'toolStart',
       id: g,
@@ -745,12 +769,11 @@ export async function* runAgent(query: string, ctx?: AgentContext): AsyncGenerat
       summary: `${proto.steps.length} commands · no deck collisions · run ready`,
     }
     yield { type: 'protocol', protocol: proto }
-    if (general) {
-      yield {
-        type: 'answer',
-        text: `${proto.fallbackNote ?? ''} I've built the deck, the step sequence, and a PyLabRobot movement script — open it in the Bench to scrub through or view the code.`,
-        citations: [],
-      }
+    // Always close with a reasoned, attributed conclusion (opentrons runs used to end on a bare card).
+    yield {
+      type: 'answer',
+      text: protocolConclusion(proto, memReply, general),
+      citations: memReply.citations.slice(0, 2),
     }
     yield { type: 'done' }
     return

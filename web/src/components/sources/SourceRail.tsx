@@ -10,7 +10,7 @@ export function SourceRail({ onCollapse }: { onCollapse: () => void }) {
       <div className="flex items-center gap-2 px-4 pb-3 pt-5">
         <div className="flex items-center gap-1.5 text-[12px] font-medium uppercase tracking-[0.12em] text-faint">
           <Layers className="size-3.5" strokeWidth={2} />
-          {isLive ? 'Source preview' : 'Demo sources'}
+          {isLive ? 'Source preview' : 'Sources'}
         </div>
         <span className="ml-auto flex items-center gap-1.5 text-[11.5px] text-muted">
           <span className="size-1.5 rounded-full bg-sage-500" />

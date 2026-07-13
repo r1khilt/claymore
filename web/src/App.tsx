@@ -40,12 +40,13 @@ const DEFAULT_PROFILE: Profile = {
 type AskMode = 'landing' | 'chat' | 'run'
 
 /** Collapsible panel open/closed, remembered across sessions. */
-function usePanel(key: string): [boolean, (v: boolean) => void] {
+function usePanel(key: string, defaultOpen = true): [boolean, (v: boolean) => void] {
   const [open, setOpen] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(key) !== '0'
+      const v = localStorage.getItem(key)
+      return v === null ? defaultOpen : v !== '0'
     } catch {
-      return true
+      return defaultOpen
     }
   })
   const set = useCallback(
@@ -113,7 +114,8 @@ export default function App() {
   const [approvalsCount, setApprovalsCount] = useState(2)
   const [proactiveCount, setProactiveCount] = useState(notifications.length)
   const [navOpen, setNavOpen] = usePanel('claymore.ui.nav')
-  const [railOpen, setRailOpen] = usePanel('claymore.ui.rail')
+  // Source rail starts closed — a cleaner first impression; a floating button opens it.
+  const [railOpen, setRailOpen] = usePanel('claymore.ui.rail', false)
   const showRail = view === 'ask'
   // A turn can finish streaming after the user has already opened another chat; this ref
   // lets that late persist know whether it may still seed `loadedTurns`.

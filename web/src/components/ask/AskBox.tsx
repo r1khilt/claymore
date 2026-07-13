@@ -34,7 +34,7 @@ export function AskBox({
   const canSend = value.trim().length > 0 && !loading
 
   return (
-    <div className="glass-raised relative rounded-[24px] transition-shadow focus-within:shadow-[0_28px_70px_-24px_rgba(28,29,24,0.3)] focus-within:ring-2 focus-within:ring-sage-500/40">
+    <div className="glass-raised relative rounded-[24px] transition-shadow focus-within:shadow-[0_28px_70px_-24px_rgba(28,29,24,0.3)]">
       <textarea
         ref={ref}
         rows={1}

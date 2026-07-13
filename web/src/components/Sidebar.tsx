@@ -2,7 +2,6 @@ import { motion } from 'framer-motion'
 import {
   Sparkles,
   FolderGit2,
-  Waypoints,
   Inbox,
   Plug,
   PanelLeftClose,
@@ -17,10 +16,9 @@ import { ProfileMenu } from '@/components/profile/ProfileMenu'
 // Bench has no nav entry on purpose — the view still exists and opens via openProtocol.
 // 'approvals' is the merged Inbox tab: proactive nudges + pending approvals (InboxView).
 const NAV: { view: View; label: string; icon: LucideIcon }[] = [
+  { view: 'approvals', label: 'Inbox', icon: Inbox },
   { view: 'ask', label: 'Ask', icon: Sparkles },
   { view: 'projects', label: 'Projects', icon: FolderGit2 },
-  { view: 'memory', label: 'Memory', icon: Waypoints },
-  { view: 'approvals', label: 'Inbox', icon: Inbox },
   { view: 'connectors', label: 'Connectors', icon: Plug },
 ]
 

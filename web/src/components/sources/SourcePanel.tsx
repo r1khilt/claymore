@@ -165,10 +165,7 @@ export function SourcePanel({ feed }: { feed: SourceFeed }) {
         </div>
         {feed.connected && (
           <span className="ml-auto flex items-center gap-1.5 text-[11px] text-faint">
-            <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-sage-400 opacity-60" />
-              <span className="relative inline-flex size-1.5 rounded-full bg-sage-500" />
-            </span>
+            <span className="size-1.5 rounded-full bg-sage-500" />
             {feed.lastSync ? timeAgo(feed.lastSync) : 'synced'}
           </span>
         )}

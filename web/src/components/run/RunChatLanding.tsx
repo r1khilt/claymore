@@ -38,7 +38,7 @@ export function RunChatLanding({ onRun, onChat }: { onRun: () => void; onChat: (
           {...CARD_IN}
           transition={{ delay: 0.14, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
           onClick={onRun}
-          className="glass-raised group flex flex-col rounded-2xl p-5 text-left ring-1 ring-inset ring-sage-500/20 transition-all hover:-translate-y-1 hover:ring-sage-500/40"
+          className="glass-raised group flex flex-col rounded-2xl p-5 text-left ring-1 ring-inset ring-sage-500/20 transition-all hover:-translate-y-1"
         >
           <div className="flex items-center gap-2.5">
             <span className="grid size-9 place-items-center rounded-xl bg-sage-500 text-white shadow-sm">

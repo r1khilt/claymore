@@ -138,7 +138,7 @@ export function Sidebar({
                   key={c.id}
                   onClick={() => onOpenChat(c.id)}
                   className={cn(
-                    'truncate rounded-lg px-2 py-1 text-left transition-colors hover:bg-black/5 hover:text-ink',
+                    'shrink-0 truncate rounded-lg px-2 py-1 text-left transition-colors hover:bg-black/5 hover:text-ink',
                     active && 'bg-black/5 text-ink',
                   )}
                   title={c.title}

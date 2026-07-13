@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
 import { PanelLeftOpen, PanelRightOpen, Plus } from 'lucide-react'
 import type { View } from '@/lib/types'
-import { isLive } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { defaultProtocol, type Protocol } from '@/lib/protocol'
 import {
@@ -258,10 +257,6 @@ export default function App() {
                   New chat
                 </button>
               )}
-              <span className="flex items-center gap-1.5 rounded-full border border-black/[0.06] bg-white/50 px-2.5 py-1.5 text-[11.5px] font-medium text-muted backdrop-blur">
-                <span className={`size-1.5 rounded-full ${isLive ? 'bg-sage-500' : 'bg-amber-400'}`} />
-                {isLive ? 'Live · agent' : 'Demo data'}
-              </span>
               <AnimatePresence>
                 {!railOpen && (
                   <PanelButton key="open-rail" onClick={() => setRailOpen(true)} title="Show sources">

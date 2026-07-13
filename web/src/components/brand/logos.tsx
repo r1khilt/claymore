@@ -3,7 +3,7 @@
  * Granola / Code render in `currentColor` (the chip sets the color); Slack and
  * Gmail carry their own iconic multicolor.
  */
-import type { SVGProps } from 'react'
+import { useId, type SVGProps } from 'react'
 
 export function SlackLogo(props: SVGProps<SVGSVGElement>) {
   return (
@@ -45,15 +45,18 @@ export function NotionLogo(props: SVGProps<SVGSVGElement>) {
 
 export function IMessageLogo(props: SVGProps<SVGSVGElement>) {
   // Apple Messages app icon: green gradient tile + white speech bubble (full-bleed).
+  // Unique gradient id per instance — a shared literal id resolves to whichever
+  // copy is first in the DOM, so the fill breaks when that copy unmounts.
+  const gradId = useId()
   return (
     <svg viewBox="0 0 24 24" fill="none" {...props}>
       <defs>
-        <linearGradient id="imsg-grad" x1="12" y1="0" x2="12" y2="24" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradId} x1="12" y1="0" x2="12" y2="24" gradientUnits="userSpaceOnUse">
           <stop stopColor="#5BF675" />
           <stop offset="1" stopColor="#12C230" />
         </linearGradient>
       </defs>
-      <rect width="24" height="24" rx="5.4" fill="url(#imsg-grad)" />
+      <rect width="24" height="24" rx="5.4" fill={`url(#${gradId})`} />
       <path d="M12 5.15c-4.34 0-7.85 2.83-7.85 6.33 0 1.99 1.14 3.77 2.9 4.94-.05.9-.53 2-1.28 2.72-.2.19-.07.53.21.52 1.5-.05 2.85-.62 3.82-1.44.68.13 1.4.2 2.2.2 4.34 0 7.85-2.83 7.85-6.33S16.34 5.15 12 5.15Z" fill="#fff" />
     </svg>
   )

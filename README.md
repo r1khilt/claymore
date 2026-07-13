@@ -1,111 +1,158 @@
 # Claymore
 
-A lab-memory agent for research labs, plus a **bio layer**:
-ingest a lab's scattered memory → **ask** and get an *attributed* answer → **act**
-(you just approve) → serve the lab's coding agents over **MCP** → **reach out** proactively
-→ and **run the experiment** (compute first, wet-lab later, gated).
+> **The autonomous intelligence layer for scientific research.**
 
-> Read [`CLAUDE.md`](./CLAUDE.md) first — it's the source of truth (what we're building, the
-> hard rules, the decided stack). Then [`WORKPLAN.md`](./WORKPLAN.md) for the two-person split,
-> [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the roadmap + risk register, and
-> [`SECURITY.md`](./SECURITY.md) / [`ENGINEERING_GUIDELINES.md`](./ENGINEERING_GUIDELINES.md)
-> before touching anything that ingests, acts, runs code, or holds a secret.
+Claymore is an autonomous experimentation platform that enables scientific laboratories to continuously conduct research in both computational environments and the physical world. Rather than acting as another chat interface or analysis tool, Claymore understands a lab's collective knowledge, decides what investigations should be performed, executes computational analyses, controls laboratory robots, and continuously learns from the results.
 
-## What works today (2026-07-09)
+## The Problem
 
-The end-to-end **ask** path is **live**: Slack/Gmail/Notion/GitHub ingest through Composio into a
-Graphiti/FalkorDB temporal graph (identity-resolved, provenance-tagged, Haiku extraction),
-answered with cited, attributed facts — or an honest no-answer when the graph can't ground
-one — over both a Telegram bot (@ClaymoreLabs_bot) and a **web dashboard** (`web/`): a
-Composer chat, a Bench workspace, and live source panels (Slack/Gmail/Notion/iMessage).
-Write-backs, MCP-out, and proactive triggers are built and tested behind flags.
+Scientific progress is often limited not by a lack of ideas, but by a lack of time.
 
-The **bio execute layer** has landed its first agent-run work, streamed live into the
-Composer (each degrades to a self-contained demo when its backend isn't configured, so the
-whole path is usable without keys and flips to real when they're present):
+Every day, researchers propose promising hypotheses in Slack threads, meetings, notebooks, GitHub issues, and emails. Most are never explored—not because they lack merit, but because experiments are expensive, researchers are busy, and priorities constantly shift.
 
-- **Bench** — the agent authors an Opentrons scene from the full OT-2/Flex catalog (deck +
-  choreography + generated Protocol-API / PyLabRobot code), rendered in 2D/3D and dry-run
-  simulated. Nothing runs on a robot.
-- **ML analysis** (`execute/ml_analysis.py`) — trains a model on a dataset the lab *actually
-  referenced in memory* (resolved + attributed, never fabricated) and returns a grounded
-  verdict (supported / refuted / inconclusive) with inline charts.
-- **Claude Science** (`execute/claude_science.py`) — drives Anthropic's local Claude Science
-  daemon at `localhost:8765` over its **local HTTP API** (start a run, then poll its frame for
-  status + results — no computer-use/vision loop), streaming each step into a collapsible "watch
-  Claymore work" panel; previews a simulated run when the app isn't up.
+Claymore ensures those ideas don't stay forgotten.
 
-Compute-sandbox and wet-lab execution remain gated and later-phase.
+## What Claymore Does
 
-## Quickstart
+Claymore acts as a persistent intelligence layer for an entire laboratory.
 
-```bash
-git clone https://github.com/r1khilt/claymore.git && cd claymore
-cp .env.example .env            # fill ANTHROPIC_API_KEY, VOYAGE_API_KEY, COMPOSIO_API_KEY
-python -m venv .venv && source .venv/bin/activate
-make install                    # pip install -e ".[dev,...]"
-make up                         # falkordb + postgres + redis
-make check                      # ruff + mypy --strict + pytest  (green = safe to merge)
-make run                        # FastAPI on :8000  (GET /healthz)
-```
+It continuously ingests scientific context from collaboration tools, codebases, protocols, datasets, and experiment records, building a unified understanding of everything a lab has discussed, tested, and learned.
 
-In a second terminal, start the live dashboard:
+From there, it can:
 
-```bash
-cd web
-npm install
-VITE_CLAYMORE_LIVE=1 npm run dev   # http://localhost:5173
-```
+* Discover promising hypotheses that were proposed but never investigated.
+* Plan the most informative next experiment.
+* Perform computational research through Claude Science, including data analysis, machine learning, statistical modeling, literature synthesis, and scientific computing.
+* Design, validate, and execute robotic laboratory workflows through Opentrons and PyLabRobot.
+* Interpret experimental results and feed them back into scientific memory.
+* Continue iterating toward an answer by autonomously selecting the next experiment.
 
-Open **Connectors**, choose **Connect** on Slack, Gmail, Notion, or GitHub, and approve that
-provider in the Composio popup. The card changes to **Connected** when OAuth returns; choose
-**Sync now** to import the bounded initial window into attributed lab memory. Later syncs are
-incremental, and connection/sync state survives an API restart. Composio manages the provider
-OAuth apps, so the local setup needs only `COMPOSIO_API_KEY`—`COMPOSIO_USER_ID` is optional and
-defaults to `WEB_USER_ID`. OAuth consent itself cannot be replaced by an environment key.
-
-To wire the optional Telegram bot, expose :8000 (ngrok), set `PUBLIC_BASE_URL`, register the
-Telegram webhook with `setWebhook(url=.../webhooks/telegram,
-secret_token=$TELEGRAM_WEBHOOK_SECRET)`, and enroll users via
-`TELEGRAM_ENROLLMENTS=<telegram_id>:<lab>:<user>`.
-
-Normalized episodes, connector checkpoints, and the Graphiti provenance/visibility sidecar are
-kept in the private local SQLite state file under `CLAYMORE_LOCAL_DIR` (default `~/.claymore`), so
-connections, deduplication, attributed retrieval, and incremental sync survive API restarts.
-
-## Layout (see `CLAUDE.md §4`)
+The result is a continuous closed-loop experimentation cycle.
 
 ```
-src/claymore/
-├── config.py        # env-driven settings + feature flags
-├── ports.py         # the 7 vendor-swap interfaces (hexagonal seams)
-├── api/             # FastAPI: webhooks (Telegram/WhatsApp), admin ingest, runtime wiring
-├── ingest/          # [Pipes]  sources -> Episode -> durable log
-├── memory/          # [Brain]  Graphiti graph, identity, reconcile, retrieval
-├── agent/           # [Brain]  Claude tool-loop, conversation, temporal
-├── actions/         # [Pipes]  Composio write-backs behind the approval gate
-├── messaging/       # [Pipes]  Telegram (live) / WhatsApp via Twilio (paid-Twilio labs)
-├── mcp_server/      # [Brain]  expose lab memory over MCP
-├── proactive/       # briefs, never-tested-idea nudges, digests
-├── execute/         # [Brain]  ml_analysis + claude_science (live); compute/wet-lab (gated, later)
-├── auth/            # per-user/per-lab scoping, RBAC
-└── audit.py         # immutable audit trail
-
-web/                 # Vite/React dashboard: Composer chat, Bench (2D/3D deck), source panels
+Scientific Memory
+        │
+        ▼
+ Discover Hypothesis
+        │
+        ▼
+ Computational Research
+ (Claude Science)
+        │
+        ▼
+ Physical Experiment
+(Opentrons / PyLabRobot)
+        │
+        ▼
+ Experimental Results
+        │
+        ▼
+ Updated Scientific Memory
+        │
+        └───────────────► Repeat
 ```
 
-## The frozen contracts
+## Example Workflow
 
-Two people build in parallel by depending only on stable *shapes*, not each other's code
-(`WORKPLAN.md §2`). The contracts, defined here in the foundation:
+A researcher casually mentions in Slack:
 
-| Contract | File |
-|---|---|
-| `Episode` (ingest → memory) | `ingest/normalize.py` |
-| Scientific ontology (entities + fact edges) | `memory/ontology.py` |
-| The 7 vendor ports | `ports.py` |
-| Agent entrypoint (`handle`) | `agent/__init__.py` |
-| Approval gate (`PendingAction`) | `actions/approvals.py` |
-| User / lab / scope model | `auth/models.py` |
+> "The low-magnesium wells looked brighter yesterday. Could magnesium and DNA concentration be interacting?"
 
-Changing a contract is a two-person decision — announce it.
+The team agrees it is interesting.
+
+Nobody has time to investigate.
+
+Claymore:
+
+* identifies the abandoned hypothesis,
+* gathers the previous experiments,
+* analyzes historical data,
+* trains predictive models,
+* determines the most informative experiment,
+* generates a robotic workflow,
+* executes the computational and physical investigation,
+* interprets the results,
+* and immediately begins planning the next experiment.
+
+## Key Capabilities
+
+### Persistent Scientific Memory
+
+Claymore connects to a laboratory's digital footprint, including:
+
+* Slack
+* GitHub
+* Gmail
+* Notion
+* Experimental protocols
+* Meeting transcripts
+* Scientific datasets
+* Prior experiments
+
+Every finding is grounded in attributed scientific memory.
+
+### Autonomous Computational Research
+
+Claymore can invoke Claude Science whenever deeper computational investigation is required.
+
+Examples include:
+
+* Machine learning
+* Statistical analysis
+* Bioinformatics
+* Data visualization
+* Literature review
+* Scientific computing
+
+### Autonomous Physical Experimentation
+
+Claymore controls laboratory robotics through Opentrons and PyLabRobot.
+
+It can:
+
+* Generate robotic protocols
+* Validate experiments before execution
+* Coordinate multiple laboratory instruments
+* Execute physical workflows on connected hardware
+* Learn from the resulting measurements
+
+## Technology
+
+### AI
+
+* Claude API
+* Claude Agent SDK
+* Claude Science
+
+### Memory
+
+* Graphiti
+* FalkorDB
+
+### Robotics
+
+* Opentrons
+* PyLabRobot
+
+### Integrations
+
+* Composio
+* Slack
+* GitHub
+* Gmail
+* Notion
+
+### Frontend
+
+* React
+* TypeScript
+* Three.js
+
+### Backend
+
+* Python
+* FastAPI
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

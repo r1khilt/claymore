@@ -39,7 +39,9 @@ function executedLine(a: PendingAction): ExecutedItem {
   return { platform: 'notion', text: a.description, when: 'just now' }
 }
 
-export function ApprovalsView({ onCountChange }: { onCountChange?: (n: number) => void }) {
+/** The Approvals content (pending cards + recently executed), shell-free so the merged
+ *  Inbox tab can compose it. `ApprovalsView` below keeps the standalone page intact. */
+export function ApprovalsSection({ onCountChange }: { onCountChange?: (n: number) => void }) {
   const [pending, setPending] = useState<PendingAction[]>(PENDING)
   const [executed, setExecuted] = useState<ExecutedItem[]>(EXECUTED)
 
@@ -50,10 +52,7 @@ export function ApprovalsView({ onCountChange }: { onCountChange?: (n: number) =
   const resolve = (token: string) => setPending((p) => p.filter((a) => a.token !== token))
 
   return (
-    <ViewShell
-      title="Approvals"
-      subtitle="Claymore drafts the work — a reply, an issue, a page. Nothing runs until you approve it."
-    >
+    <>
       <div className="mb-3 flex items-center gap-2 text-[12px] font-medium uppercase tracking-[0.12em] text-faint">
         Pending · {pending.length}
       </div>
@@ -101,6 +100,17 @@ export function ApprovalsView({ onCountChange }: { onCountChange?: (n: number) =
           </motion.div>
         ))}
       </div>
+    </>
+  )
+}
+
+export function ApprovalsView({ onCountChange }: { onCountChange?: (n: number) => void }) {
+  return (
+    <ViewShell
+      title="Approvals"
+      subtitle="Claymore drafts the work — a reply, an issue, a page. Nothing runs until you approve it."
+    >
+      <ApprovalsSection onCountChange={onCountChange} />
     </ViewShell>
   )
 }

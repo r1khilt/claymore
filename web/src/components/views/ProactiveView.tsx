@@ -98,7 +98,9 @@ function Card({ n, onAsk, onDismiss }: { n: LabNotification; onAsk: (q: string) 
   )
 }
 
-export function ProactiveView({
+/** The Proactive content (nudge cards), shell-free so the merged Inbox tab can compose it.
+ *  `ProactiveView` below keeps the standalone page intact. */
+export function ProactiveSection({
   onAsk = () => {},
   onCountChange,
 }: {
@@ -112,10 +114,7 @@ export function ProactiveView({
   const dismiss = (id: string) => setItems((xs) => xs.filter((n) => n.id !== id))
 
   return (
-    <ViewShell
-      title="Proactive"
-      subtitle="Claymore reaches out first — surfacing untested ideas, contradicted decisions, and briefs before you ask."
-    >
+    <>
       {items.length === 0 ? (
         <div className="glass flex items-center justify-center gap-2 rounded-2xl px-4 py-8 text-[13px] text-muted">
           <BellOff className="size-4 text-faint" strokeWidth={1.85} />
@@ -130,6 +129,23 @@ export function ProactiveView({
           </AnimatePresence>
         </div>
       )}
+    </>
+  )
+}
+
+export function ProactiveView({
+  onAsk,
+  onCountChange,
+}: {
+  onAsk?: (q: string) => void
+  onCountChange?: (n: number) => void
+}) {
+  return (
+    <ViewShell
+      title="Proactive"
+      subtitle="Claymore reaches out first — surfacing untested ideas, contradicted decisions, and briefs before you ask."
+    >
+      <ProactiveSection onAsk={onAsk} onCountChange={onCountChange} />
     </ViewShell>
   )
 }

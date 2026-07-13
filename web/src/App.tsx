@@ -114,8 +114,9 @@ export default function App() {
   const [approvalsCount, setApprovalsCount] = useState(2)
   const [proactiveCount, setProactiveCount] = useState(notifications.length)
   const [navOpen, setNavOpen] = usePanel('claymore.ui.nav')
-  // Source rail starts closed — a cleaner first impression; a floating button opens it.
-  const [railOpen, setRailOpen] = usePanel('claymore.ui.rail', false)
+  // Source rail always starts closed on load (session-only, not persisted) — a cleaner first
+  // impression; a floating button opens it, and it stays where you put it until the next reload.
+  const [railOpen, setRailOpen] = useState(false)
   const showRail = view === 'ask'
   // A turn can finish streaming after the user has already opened another chat; this ref
   // lets that late persist know whether it may still seed `loadedTurns`.

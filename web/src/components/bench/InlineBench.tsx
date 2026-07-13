@@ -23,12 +23,15 @@ import {
   Maximize2,
   Boxes,
   CircleDot,
+  Box,
+  Code2,
 } from 'lucide-react'
 import { primaryPipette, type Protocol } from '@/lib/protocol'
 import { webglAvailable } from '@/lib/webgl'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { cn } from '@/lib/utils'
 import { Deck2D } from './Deck2D'
+import { CodePanel } from './CodePanel'
 import { useRunPlayer } from './useRunPlayer'
 
 // three.js only loads once a bench actually scrolls into a conversation.
@@ -84,6 +87,8 @@ export function InlineBench({
   const startedRef = useRef(false)
   const completedRef = useRef(false)
   const [gl3dFailed, setGl3dFailed] = useState(false)
+  // Swap the deck viewport for the raw protocol code (Opentrons / PyLabRobot) without leaving chat.
+  const [showCode, setShowCode] = useState(false)
 
   // The run has reached the end at least once. Fire onComplete a single time.
   const finished = index >= total - 1
@@ -154,8 +159,38 @@ export function InlineBench({
 
       {/* live 3D bench — mounted only while on-screen */}
       <div className="relative mx-4 mt-3 overflow-hidden rounded-xl bg-[#eeece6] ring-1 ring-inset ring-black/[0.06]">
+        {/* 3D ⇄ Code toggle — top-left so it never collides with the code panel's copy button */}
+        <div className="absolute left-2 top-2 z-10 flex items-center gap-0.5 rounded-lg border border-black/[0.08] bg-white/85 p-0.5 text-[11px] font-medium shadow-sm backdrop-blur">
+          <button
+            onClick={() => setShowCode(false)}
+            className={cn(
+              'flex items-center gap-1 rounded-md px-2 py-1 transition-colors',
+              !showCode ? 'bg-sage-500 text-white' : 'text-muted hover:text-ink',
+            )}
+            title="3D bench"
+          >
+            <Box className="size-3.5" strokeWidth={2} />
+            3D
+          </button>
+          <button
+            onClick={() => setShowCode(true)}
+            className={cn(
+              'flex items-center gap-1 rounded-md px-2 py-1 transition-colors',
+              showCode ? 'bg-sage-500 text-white' : 'text-muted hover:text-ink',
+            )}
+            title="Protocol code"
+          >
+            <Code2 className="size-3.5" strokeWidth={2} />
+            Code
+          </button>
+        </div>
+
         <div className="aspect-[16/10] w-full">
-          {webgl && !gl3dFailed ? (
+          {showCode ? (
+            <div className="h-full bg-white/70">
+              <CodePanel code={protocol.code} lang={protocol.codeLang} />
+            </div>
+          ) : webgl && !gl3dFailed ? (
             inView ? (
               <ErrorBoundary
                 fallback={
@@ -190,65 +225,69 @@ export function InlineBench({
           )}
         </div>
 
-        {/* current-step caption */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/25 to-transparent px-3 pb-2 pt-6 text-[12px] font-medium text-white">
-          <span className="tabular-nums opacity-80">
-            {Math.max(0, index + 1)}/{total}
-          </span>
-          <span className="min-w-0 flex-1 truncate">{state.current?.label ?? 'Ready to run'}</span>
-        </div>
+        {/* current-step caption — only over the deck, not the code view */}
+        {!showCode && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/25 to-transparent px-3 pb-2 pt-6 text-[12px] font-medium text-white">
+            <span className="tabular-nums opacity-80">
+              {Math.max(0, index + 1)}/{total}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{state.current?.label ?? 'Ready to run'}</span>
+          </div>
+        )}
       </div>
 
-      {/* compact transport */}
-      <div className="flex items-center gap-2 px-4 pt-3">
-        <button
-          onClick={player.restart}
-          className="grid size-8 place-items-center rounded-lg text-muted transition-colors hover:bg-black/5 hover:text-ink"
-          title="Restart"
-        >
-          <RotateCcw className="size-4" strokeWidth={2} />
-        </button>
-        <button
-          onClick={player.toggle}
-          className="grid size-9 place-items-center rounded-full bg-sage-500 text-white shadow-sm transition-colors hover:bg-sage-600"
-          title={playing ? 'Pause' : 'Play'}
-        >
-          {playing ? (
-            <Pause className="size-[18px]" strokeWidth={2.25} />
-          ) : (
-            <Play className="size-[18px] translate-x-0.5" strokeWidth={2.25} />
-          )}
-        </button>
+      {/* compact transport — hidden in code view (it drives the run playback) */}
+      {!showCode && (
+        <div className="flex items-center gap-2 px-4 pt-3">
+          <button
+            onClick={player.restart}
+            className="grid size-8 place-items-center rounded-lg text-muted transition-colors hover:bg-black/5 hover:text-ink"
+            title="Restart"
+          >
+            <RotateCcw className="size-4" strokeWidth={2} />
+          </button>
+          <button
+            onClick={player.toggle}
+            className="grid size-9 place-items-center rounded-full bg-sage-500 text-white shadow-sm transition-colors hover:bg-sage-600"
+            title={playing ? 'Pause' : 'Play'}
+          >
+            {playing ? (
+              <Pause className="size-[18px]" strokeWidth={2.25} />
+            ) : (
+              <Play className="size-[18px] translate-x-0.5" strokeWidth={2.25} />
+            )}
+          </button>
 
-        {/* scrubber */}
-        <div className="relative min-w-0 flex-1">
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.06]">
-            <div
-              className="h-full rounded-full bg-sage-500 transition-[width] duration-200"
-              style={{ width: `${progress}%` }}
+          {/* scrubber */}
+          <div className="relative min-w-0 flex-1">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.06]">
+              <div
+                className="h-full rounded-full bg-sage-500 transition-[width] duration-200"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <input
+              type="range"
+              min={-1}
+              max={total - 1}
+              step={1}
+              value={index}
+              onChange={(e) => player.seek(Number(e.target.value))}
+              className="absolute inset-0 h-1.5 w-full cursor-pointer opacity-0"
+              aria-label="Scrub run"
             />
           </div>
-          <input
-            type="range"
-            min={-1}
-            max={total - 1}
-            step={1}
-            value={index}
-            onChange={(e) => player.seek(Number(e.target.value))}
-            className="absolute inset-0 h-1.5 w-full cursor-pointer opacity-0"
-            aria-label="Scrub run"
-          />
-        </div>
 
-        <button
-          onClick={player.cycleSpeed}
-          className="flex items-center gap-1 rounded-lg border border-black/[0.06] bg-white/50 px-2 py-1 text-[12px] font-medium text-muted transition-colors hover:text-ink"
-          title="Playback speed"
-        >
-          <Gauge className="size-3.5" strokeWidth={2} />
-          {speed}×
-        </button>
-      </div>
+          <button
+            onClick={player.cycleSpeed}
+            className="flex items-center gap-1 rounded-lg border border-black/[0.06] bg-white/50 px-2 py-1 text-[12px] font-medium text-muted transition-colors hover:text-ink"
+            title="Playback speed"
+          >
+            <Gauge className="size-3.5" strokeWidth={2} />
+            {speed}×
+          </button>
+        </div>
+      )}
 
       {protocol.groundedNote && (
         <p className="px-4 pt-2.5 text-[12.5px] italic text-sage-700/80">{protocol.groundedNote}</p>

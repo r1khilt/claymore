@@ -1126,7 +1126,7 @@ function composeInstrumentScene(o: InstrumentSceneOpts): Protocol {
     },
     steps,
     codeLang: 'PyLabRobot',
-    fallbackNote: `${cap(idef.capability)} isn't a native Opentrons deck capability, so Claymore composed a general lab-robot scene: it fills the ${pdef.display} on-deck, a robot arm hands it to the ${lower}, and the ${lower} runs the ${idef.verb}. The scene + PyLabRobot script are what such a robot would run; nothing executes here.`,
+    fallbackNote: `Claymore composed a general lab-robot scene: it fills the ${pdef.display} on-deck, a robot arm hands it to the ${lower}, and the ${lower} runs the ${idef.verb}.`,
     code: pylabrobotScript(request, idef, wellCount, perWell, seconds, rpm),
   }
 }

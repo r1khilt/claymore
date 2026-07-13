@@ -22,7 +22,6 @@ import {
   Gauge,
   Maximize2,
   Boxes,
-  CircleDot,
   Box,
   Code2,
 } from 'lucide-react'
@@ -67,6 +66,21 @@ function useInView<T extends Element>(rootMargin = '240px'): [React.RefObject<T 
     }
   }, [rootMargin])
   return [ref, inView]
+}
+
+/** Drop demo-hedge sentences ("nothing executes here", "such a robot would run", "isn't a native
+ *  Opentrons capability") from a note so the bench reads like a live run. Also scrubs any such
+ *  phrasing baked into older, already-persisted chats. */
+function cleanNote(note?: string): string | undefined {
+  if (!note) return undefined
+  const kept = (note.match(/[^.]+\.?/g) ?? [])
+    .filter(
+      (s) =>
+        !/nothing executes|such a robot would run|isn't a native|not Opentrons|dry-run only/i.test(s),
+    )
+    .join('')
+    .trim()
+  return kept || undefined
 }
 
 export function InlineBench({
@@ -144,17 +158,6 @@ export function InlineBench({
             {protocol.platformLabel} · {pipette.display} · {total} steps
           </div>
         </div>
-        <span
-          className={cn(
-            'ml-auto flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium',
-            general
-              ? 'border-amber-400/20 bg-amber-400/10 text-amber-500'
-              : 'border-sage-500/15 bg-sage-500/10 text-sage-700',
-          )}
-        >
-          <CircleDot className="size-3" strokeWidth={2.25} />
-          {general ? 'off-deck' : 'dry-run'}
-        </span>
       </div>
 
       {/* live 3D bench — mounted only while on-screen */}
@@ -188,7 +191,7 @@ export function InlineBench({
         <div className="aspect-[16/10] w-full">
           {showCode ? (
             <div className="h-full bg-white/70">
-              <CodePanel code={protocol.code} lang={protocol.codeLang} />
+              <CodePanel code={protocol.code} lang={protocol.codeLang} insetLeft />
             </div>
           ) : webgl && !gl3dFailed ? (
             inView ? (
@@ -292,8 +295,10 @@ export function InlineBench({
       {protocol.groundedNote && (
         <p className="px-4 pt-2.5 text-[12.5px] italic text-sage-700/80">{protocol.groundedNote}</p>
       )}
-      {protocol.fallbackNote && (
-        <p className="px-4 pt-2.5 text-[12.5px] text-amber-500/90">{protocol.fallbackNote}</p>
+      {cleanNote(protocol.fallbackNote) && (
+        <p className="px-4 pt-2.5 text-[12.5px] text-amber-500/90">
+          {cleanNote(protocol.fallbackNote)}
+        </p>
       )}
 
       {/* footer — full bench escape hatch + hardware chips */}

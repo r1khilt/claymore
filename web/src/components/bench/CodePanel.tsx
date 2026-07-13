@@ -1,7 +1,17 @@
 import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
-export function CodePanel({ code, lang }: { code: string; lang: string }) {
+export function CodePanel({
+  code,
+  lang,
+  insetLeft = false,
+}: {
+  code: string
+  lang: string
+  /** Reserve space on the left of the header for an overlaid control (the inline bench's toggle). */
+  insetLeft?: boolean
+}) {
   const [copied, setCopied] = useState(false)
 
   function copy() {
@@ -13,7 +23,12 @@ export function CodePanel({ code, lang }: { code: string; lang: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-line/70 px-3.5 py-2">
+      <div
+        className={cn(
+          'flex items-center justify-between border-b border-line/70 py-2 pr-3.5',
+          insetLeft ? 'pl-[132px]' : 'pl-3.5',
+        )}
+      >
         <span className="font-mono text-[11px] text-muted">protocol.py · {lang}</span>
         <button
           onClick={copy}

@@ -2,11 +2,9 @@ import { motion } from 'framer-motion'
 import {
   Sparkles,
   FolderGit2,
-  FlaskConical,
   Waypoints,
-  CheckCheck,
+  Inbox,
   Plug,
-  Radar,
   PanelLeftClose,
   Plus,
   type LucideIcon,
@@ -16,14 +14,14 @@ import type { ChatSummary, LocalState, Profile } from '@/lib/local'
 import { cn } from '@/lib/utils'
 import { ProfileMenu } from '@/components/profile/ProfileMenu'
 
+// Bench has no nav entry on purpose — the view still exists and opens via openProtocol.
+// 'approvals' is the merged Inbox tab: proactive nudges + pending approvals (InboxView).
 const NAV: { view: View; label: string; icon: LucideIcon }[] = [
   { view: 'ask', label: 'Ask', icon: Sparkles },
   { view: 'projects', label: 'Projects', icon: FolderGit2 },
-  { view: 'bench', label: 'Bench', icon: FlaskConical },
   { view: 'memory', label: 'Memory', icon: Waypoints },
-  { view: 'approvals', label: 'Approvals', icon: CheckCheck },
+  { view: 'approvals', label: 'Inbox', icon: Inbox },
   { view: 'connectors', label: 'Connectors', icon: Plug },
-  { view: 'proactive', label: 'Proactive', icon: Radar },
 ]
 
 export function BrandMark({ size = 26 }: { size?: number }) {

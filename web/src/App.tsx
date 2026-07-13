@@ -21,7 +21,7 @@ import { RunView } from '@/components/run/RunView'
 import { SourceRail } from '@/components/sources/SourceRail'
 import { ProtocolWorkspace } from '@/components/bench/ProtocolWorkspace'
 import { MemoryView } from '@/components/views/MemoryView'
-import { ApprovalsView } from '@/components/views/ApprovalsView'
+import { InboxView } from '@/components/views/InboxView'
 import { ConnectorsView } from '@/components/views/ConnectorsView'
 import { ProactiveView } from '@/components/views/ProactiveView'
 import { notifications } from '@/lib/mockData'
@@ -194,7 +194,14 @@ export default function App() {
       case 'memory':
         return <MemoryView />
       case 'approvals':
-        return <ApprovalsView onCountChange={setApprovalsCount} />
+        // The merged Inbox tab — proactive nudges + pending approvals in one page.
+        return (
+          <InboxView
+            onAsk={askAbout}
+            onApprovalsCountChange={setApprovalsCount}
+            onProactiveCountChange={setProactiveCount}
+          />
+        )
       case 'connectors':
         return <ConnectorsView />
       case 'proactive':
@@ -222,7 +229,7 @@ export default function App() {
             onNavigate={setView}
             onHome={goHome}
             onCollapse={() => setNavOpen(false)}
-            badges={{ approvals: approvalsCount, proactive: proactiveCount }}
+            badges={{ approvals: approvalsCount + proactiveCount }}
             profile={profile}
             local={local}
             onRefresh={refresh}

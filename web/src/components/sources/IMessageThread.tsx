@@ -6,7 +6,7 @@ import { cn, clockTime } from '@/lib/utils'
 const DIVIDER_GAP_MS = 60 * 60 * 1000
 
 /** How far the tail's tip juts past the bubble's side edge. */
-const TAIL_OVERHANG = 7
+const TAIL_OVERHANG = 6
 
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
@@ -36,12 +36,12 @@ function Tail({ side, className }: { side: 'in' | 'out'; className?: string }) {
   return (
     <svg
       aria-hidden
-      width="20"
-      height="25"
+      width="16"
+      height="20"
       viewBox="0 0 20 25"
       className={cn(
         'pointer-events-none absolute bottom-0',
-        side === 'out' ? '-right-[7px]' : '-left-[7px] -scale-x-100',
+        side === 'out' ? '-right-[6px]' : '-left-[6px] -scale-x-100',
         className,
       )}
     >
@@ -70,7 +70,7 @@ function Bubble({ m, tail }: { m: SourceMessage; tail: boolean }) {
     <div className={cn('flex', out ? 'justify-end' : 'justify-start')}>
       <div
         className={cn(
-          'relative max-w-[85%] rounded-[18px] px-[13px] py-[7px] text-[17px] leading-[22px]',
+          'relative max-w-[85%] rounded-[15px] px-[11px] py-[6px] text-[13.5px] leading-[18px]',
           out ? 'bg-imsg-blue text-white' : 'bg-imsg-gray text-black',
         )}
       >

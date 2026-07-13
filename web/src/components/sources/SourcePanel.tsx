@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { Paperclip, MessageSquare, Star, MoreHorizontal, ChevronRight } from 'lucide-react'
 import type { SourceFeed, SourceMessage } from '@/lib/types'
 import { PLATFORM, PlatformIcon } from '@/lib/sources'
@@ -45,26 +44,6 @@ function GenericRow({ m }: { m: SourceMessage }) {
 const N_INK = 'text-[#37352f]'
 const N_GREY = 'text-[#37352f]/45'
 
-function NotionPropertyRow({
-  icon,
-  label,
-  children,
-}: {
-  icon: ReactNode
-  label: string
-  children: ReactNode
-}) {
-  return (
-    <div className="flex items-center gap-2 py-[3px] text-[12px]">
-      <div className={cn('flex w-[92px] shrink-0 items-center gap-1.5', N_GREY)}>
-        {icon}
-        <span className="font-normal">{label}</span>
-      </div>
-      <div className={cn('min-w-0 flex-1 truncate', N_INK)}>{children}</div>
-    </div>
-  )
-}
-
 function NotionFileBlock({ label }: { label: string }) {
   return (
     <div className="mt-2 flex items-center gap-2 rounded-[3px] px-1.5 py-1.5 transition-colors hover:bg-[#37352f]/[0.04]">
@@ -107,37 +86,10 @@ function NotionDoc({ feed }: { feed: SourceFeed }) {
           {feed.title}
         </h3>
 
-        {/* properties */}
-        <div className="mt-2.5">
-          {m && (
-            <NotionPropertyRow
-              icon={<span className="grid size-[15px] place-items-center text-[10px]">👤</span>}
-              label="Edited by"
-            >
-              <span className="flex items-center gap-1.5">
-                <Avatar name={m.author} accent={m.accent} size={16} photo={photoForAuthor(m.author)} />
-                {m.author}
-              </span>
-            </NotionPropertyRow>
-          )}
-          <NotionPropertyRow
-            icon={<span className="grid size-[15px] place-items-center text-[10px]">🕘</span>}
-            label="Last edited"
-          >
-            {m ? `${timeAgo(m.timestamp)} ago` : '—'}
-          </NotionPropertyRow>
-        </div>
-
         <div className="my-2.5 h-px bg-[#37352f]/[0.08]" />
 
         {m && <p className={cn('text-[13.5px] leading-[1.6]', N_INK)}>{m.text}</p>}
         {m?.attachment && <NotionFileBlock label={m.attachment.label} />}
-
-        {m?.extracted && (
-          <div className="mt-2.5 border-t border-[#37352f]/[0.06] pt-2.5">
-            <MemoryChip />
-          </div>
-        )}
       </div>
     </div>
   )

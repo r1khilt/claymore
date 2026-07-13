@@ -19,6 +19,7 @@ export type SourcePlatform =
   | 'granola'
   | 'codelogs'
   | 'imessage'
+  | 'zoom'
   | 'manual'
 
 /** The attributed source behind a claim (platform + id + author + when). */

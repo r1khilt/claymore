@@ -62,6 +62,17 @@ export function IMessageLogo(props: SVGProps<SVGSVGElement>) {
   )
 }
 
+export function ZoomLogo(props: SVGProps<SVGSVGElement>) {
+  // Zoom app icon: white video-camera glyph on the blue tile (full-bleed).
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <rect width="24" height="24" rx="5.4" fill="#2D8CFF" />
+      <rect x="4.8" y="8" width="9.4" height="8" rx="2.1" fill="#fff" />
+      <path d="M15.4 10.7 19.2 8.3v7.4l-3.8-2.4z" fill="#fff" />
+    </svg>
+  )
+}
+
 export function GranolaLogo(props: SVGProps<SVGSVGElement>) {
   // Granola app icon: dark inked spiral on a lime tile (full-bleed).
   return (

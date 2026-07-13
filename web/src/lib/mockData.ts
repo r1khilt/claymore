@@ -399,6 +399,7 @@ export const connectors: Connector[] = [
   { platform: 'notion', name: 'Notion', connected: true, account: 'Claymore Lab', lastSync: daysAgo(0, 7, 2), episodes: 226 },
   { platform: 'imessage', name: 'iMessage', connected: true, account: 'BlueBubbles bridge', lastSync: daysAgo(0, 8, 30), episodes: 143 },
   { platform: 'granola', name: 'Granola', connected: true, account: 'Business', lastSync: daysAgo(2, 11, 0), episodes: 47 },
+  { platform: 'zoom', name: 'Zoom', connected: true, account: 'claymore-lab.zoom.us', lastSync: daysAgo(0, 5, 48), episodes: 112 },
   { platform: 'gdrive', name: 'Google Drive', connected: false },
   { platform: 'codelogs', name: 'Claude Code logs', connected: false },
 ]

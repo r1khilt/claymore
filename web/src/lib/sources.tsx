@@ -8,6 +8,7 @@ import {
   GranolaLogo,
   DriveLogo,
   CodeLogo,
+  ZoomLogo,
 } from '@/components/brand/logos'
 import type { SourcePlatform } from './types'
 import { cn } from './utils'
@@ -30,6 +31,7 @@ export const PLATFORM: Record<SourcePlatform, PlatformMeta> = {
   github: { label: 'GitHub', color: '#1f2328', Logo: GithubLogo },
   notion: { label: 'Notion', color: '#2f2c28', Logo: NotionLogo },
   imessage: { label: 'iMessage', color: '#28c93f', Logo: IMessageLogo, fullBleed: true },
+  zoom: { label: 'Zoom', color: '#2D8CFF', Logo: ZoomLogo, fullBleed: true },
   granola: { label: 'Granola', color: '#a7c33e', Logo: GranolaLogo, fullBleed: true, imgSrc: '/logos/granola.png' },
   gdrive: { label: 'Drive', color: '#1a73e8', Logo: DriveLogo, multicolor: true },
   gdocs: { label: 'Docs', color: '#1a73e8', Logo: DriveLogo, multicolor: true },
